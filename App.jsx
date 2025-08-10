@@ -1,7 +1,11 @@
-import React, { useState } from "react";
+import { useState, useCallback } from "react";
 import { createClient } from "@supabase/supabase-js";
+import * as pdfjsLib from "pdfjs-dist";
+import Tesseract from "tesseract.js";
 
-// Get from environment (Netlify)
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
+
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
@@ -9,103 +13,85 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 export default function App() {
   const [palletIds, setPalletIds] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [pushStatus, setPushStatus] = useState("");
+  const [pushing, setPushing] = useState(false);
 
-  const extractTextFromPDF = async (file) => {
-    try {
-      const arrayBuffer = await file.arrayBuffer();
-      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-      let fullText = "";
-
-      for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-        const page = await pdf.getPage(pageNum);
-        const textContent = await page.getTextContent();
-        const pageText = textContent.items.map((item) => item.str).join(" ");
-        fullText += "\n" + pageText;
-      }
-
-      return fullText;
-    } catch (err) {
-      console.error("PDF extraction error:", err);
-      return "";
-    }
-  };
-
-  const handleDrop = async (e) => {
-    e.preventDefault();
+  const extractFromPDF = async (file) => {
     setLoading(true);
-    setPalletIds([]);
-    setPushStatus("");
+    const arrayBuffer = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
 
-    const file = e.dataTransfer.files[0];
-    if (!file || !file.name.toLowerCase().endsWith(".pdf")) {
-      alert("Please drop a PDF file.");
-      setLoading(false);
-      return;
+    let foundIds = new Set();
+
+    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+      const page = await pdf.getPage(pageNum);
+      const viewport = page.getViewport({ scale: 2 });
+      const canvas = document.createElement("canvas");
+      const context = canvas.getContext("2d");
+      canvas.height = viewport.height;
+      canvas.width = viewport.width;
+
+      await page.render({ canvasContext: context, viewport }).promise;
+
+      const { data: { text } } = await Tesseract.recognize(canvas, "eng");
+
+      const matches = text.match(/\b\d{18}\b/g);
+      if (matches) {
+        matches.forEach((id) => foundIds.add(id));
+      }
     }
 
-    const text = await extractTextFromPDF(file);
-
-    // Extract exactly 18-digit IDs
-    const ids = [...new Set(text.match(/\b\d{18}\b/g) || [])];
-
-    if (ids.length === 0) {
-      alert("No pallet IDs found in this file.");
-    }
-
-    setPalletIds(ids);
+    setPalletIds([...foundIds]);
     setLoading(false);
   };
 
-  const handlePushToSupabase = async () => {
-    if (!palletIds.length) return;
-    setPushStatus("Pushing...");
-
-    try {
-      const { data, error } = await supabase
-        .from("NDAs")
-        .insert(palletIds.map((id) => ({ pallet_id: id })));
-
-      if (error) throw error;
-
-      setPushStatus(`✅ Successfully pushed ${palletIds.length} IDs to Supabase`);
-    } catch (err) {
-      console.error(err);
-      setPushStatus("❌ Error pushing to Supabase: " + err.message);
+  const handleDrop = useCallback((e) => {
+    e.preventDefault();
+    const file = e.dataTransfer.files[0];
+    if (file && file.type === "application/pdf") {
+      extractFromPDF(file);
+    } else {
+      alert("Please drop a PDF file.");
     }
+  }, []);
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+  };
+
+  const pushToSupabase = async () => {
+    if (palletIds.length === 0) return;
+    setPushing(true);
+
+    for (const id of palletIds) {
+      await supabase.from("NDAs").insert({ pallet_id: id });
+    }
+
+    setPushing(false);
+    alert("Data pushed to Supabase!");
   };
 
   return (
-    <div
-      onDrop={handleDrop}
-      onDragOver={(e) => e.preventDefault()}
-      style={{
-        padding: "2rem",
-        maxWidth: "800px",
-        margin: "0 auto",
-        textAlign: "center",
-        border: "2px dashed #aaa",
-        borderRadius: "8px",
-        background: "#f9f9f9"
-      }}
-    >
+    <div style={{ maxWidth: "800px", margin: "0 auto", padding: "2rem" }}>
       <h2>Pallet ID Extractor</h2>
-      <p>Drop a PDF file here to extract pallet IDs (18 digits each)</p>
+      <div
+        className="dropzone"
+        onDrop={handleDrop}
+        onDragOver={handleDragOver}
+      >
+        {loading ? "Extracting pallet IDs..." : "Drop your PDF here"}
+      </div>
 
-      {loading && <p>⏳ Extracting...</p>}
-
-      {!loading && palletIds.length > 0 && (
-        <div style={{ marginTop: "1rem", textAlign: "left" }}>
-          <h3>Found IDs:</h3>
+      {palletIds.length > 0 && (
+        <div className="results">
+          <h3>Extracted Pallet IDs</h3>
           <ul>
             {palletIds.map((id) => (
               <li key={id}>{id}</li>
             ))}
           </ul>
-          <button onClick={handlePushToSupabase} style={{ marginTop: "1rem" }}>
-            Push to Supabase
+          <button onClick={pushToSupabase} disabled={pushing}>
+            {pushing ? "Pushing..." : "Push to Supabase"}
           </button>
-          {pushStatus && <p>{pushStatus}</p>}
         </div>
       )}
     </div>
