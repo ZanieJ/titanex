@@ -1,122 +1,106 @@
-import React, { useState, useCallback } from "react";
-import * as pdfjsLib from "pdfjs-dist/webpack";
-import Tesseract from "tesseract.js";
-import "./style.css";
+import React, { useState } from "react";
+import * as pdfjsLib from "pdfjs-dist";
+import { createWorker } from "tesseract.js";
+import { createClient } from "@supabase/supabase-js";
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
+
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const supabase = createClient(supabaseUrl, supabaseKey);
 
 export default function App() {
-  const [fileName, setFileName] = useState("");
+  const [status, setStatus] = useState("");
   const [palletIds, setPalletIds] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [progress, setProgress] = useState("");
 
-  const handleFiles = useCallback(async (files) => {
-    if (!files || files.length === 0) return;
-    const file = files[0];
-    setFileName(file.name);
+  async function handleDrop(e) {
+    e.preventDefault();
+    const file = e.dataTransfer.files[0];
+    if (!file || file.type !== "application/pdf") {
+      alert("Please drop a PDF file.");
+      return;
+    }
+    setStatus("Extracting pallet IDs...");
     setPalletIds([]);
-    setLoading(true);
-    setProgress("Loading PDF...");
 
-    const fileReader = new FileReader();
-    fileReader.onload = async function () {
-      try {
-        const typedArray = new Uint8Array(this.result);
-        const pdf = await pdfjsLib.getDocument({ data: typedArray }).promise;
-        const ids = new Set();
+    try {
+      const ids = await extractPalletIdsFromPDF(file);
+      setPalletIds(ids);
+      setStatus(ids.length ? `Found ${ids.length} pallet IDs` : "No pallet IDs found.");
+    } catch (err) {
+      console.error("PDF extraction error:", err);
+      setStatus("Error extracting pallet IDs.");
+    }
+  }
 
-        for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-          setProgress(`Processing page ${pageNum} of ${pdf.numPages}...`);
-          const page = await pdf.getPage(pageNum);
+  async function extractPalletIdsFromPDF(file) {
+    const arrayBuffer = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
 
-          const viewport = page.getViewport({ scale: 4.0 }); // higher resolution
-          const canvas = document.createElement("canvas");
-          const context = canvas.getContext("2d");
-          canvas.height = viewport.height;
-          canvas.width = viewport.width;
+    const worker = await createWorker({
+      logger: m => console.log(m) // Optional: progress logs
+    });
+    await worker.loadLanguage("eng");
+    await worker.initialize("eng");
 
-          await page.render({ canvasContext: context, viewport }).promise;
+    const ids = new Set();
 
-          const { data: { text } } = await Tesseract.recognize(
-            canvas,
-            "eng",
-            {
-              logger: (m) => {
-                if (m.status === "recognizing text") {
-                  setProgress(
-                    `OCR ${Math.round(m.progress * 100)}% on page ${pageNum}`
-                  );
-                }
-              },
-            }
-          );
+    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+      setStatus(`Processing page ${pageNum} of ${pdf.numPages}...`);
+      const page = await pdf.getPage(pageNum);
+      const viewport = page.getViewport({ scale: 2.0 });
+      const canvas = document.createElement("canvas");
+      const context = canvas.getContext("2d");
+      canvas.height = viewport.height;
+      canvas.width = viewport.width;
+      await page.render({ canvasContext: context, viewport }).promise;
 
-          // Fix common OCR misreads
-          let cleanedText = text
-            .replace(/[Oo]/g, "0")
-            .replace(/[lI]/g, "1");
+      const { data: { text } } = await worker.recognize(canvas);
+      console.log(`Page ${pageNum} text:`, text);
 
-          // Match 18-digit sequences
-          const found = cleanedText.match(/\b\d{18}\b/g);
-          if (found) {
-            found.forEach((id) => ids.add(id));
-          }
-        }
+      const found = text.match(/\b\d{18}\b/g);
+      if (found) found.forEach(id => ids.add(id));
+    }
 
-        setPalletIds(Array.from(ids));
-        setProgress(ids.size > 0 ? "Done" : "No pallet IDs found");
-      } catch (err) {
-        console.error(err);
-        setProgress("Error processing file");
-      } finally {
-        setLoading(false);
-      }
-    };
-    fileReader.readAsArrayBuffer(file);
-  }, []);
+    await worker.terminate();
+    return Array.from(ids);
+  }
 
-  const handleDrop = (e) => {
-    e.preventDefault();
-    handleFiles(e.dataTransfer.files);
-  };
-
-  const handleDragOver = (e) => {
-    e.preventDefault();
-  };
-
-  const handleFileChange = (e) => {
-    handleFiles(e.target.files);
-  };
+  async function pushToSupabase() {
+    if (!palletIds.length) return;
+    const { error } = await supabase
+      .from("pallets")
+      .insert(palletIds.map(id => ({ pallet_id: id })));
+    if (error) alert(`Error: ${error.message}`);
+    else alert("Pallet IDs pushed to Supabase!");
+  }
 
   return (
-    <div className="container">
+    <div>
       <h1>Pallet ID Extractor</h1>
-
       <div
-        className="drop-zone"
+        id="drop-zone"
+        onDragOver={e => e.preventDefault()}
         onDrop={handleDrop}
-        onDragOver={handleDragOver}
+        style={{
+          border: "3px dashed #666",
+          padding: "40px",
+          width: "300px",
+          margin: "20px auto",
+          cursor: "pointer",
+          textAlign: "center"
+        }}
       >
-        <p>Drag & Drop PDF here or click to upload</p>
-        <input type="file" accept="application/pdf" onChange={handleFileChange} />
+        Drop PDF here
       </div>
-
-      {fileName && <p className="file-name">{fileName}</p>}
-
-      {loading && <p>{progress}</p>}
-
-      {!loading && palletIds.length > 0 && (
-        <div>
-          <h3>Found {palletIds.length} pallet IDs</h3>
-          <ul>
-            {palletIds.map((id, idx) => (
-              <li key={idx}>{id}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {!loading && palletIds.length === 0 && fileName && progress === "No pallet IDs found" && (
-        <p>No pallet IDs found</p>
+      <p>{status}</p>
+      <ul>
+        {palletIds.map(id => (
+          <li key={id}>{id}</li>
+        ))}
+      </ul>
+      {palletIds.length > 0 && (
+        <button onClick={pushToSupabase}>Push to Supabase</button>
       )}
     </div>
   );
