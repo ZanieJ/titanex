@@ -1,105 +1,97 @@
-import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm";
+import React, { useState } from "react";
+import * as pdfjsLib from "pdfjs-dist";
+import { createWorker } from "tesseract.js";
+import { createClient } from "@supabase/supabase-js";
 
-// 🔹 Your Supabase credentials
-const SUPABASE_URL = "YOUR_SUPABASE_URL";
-const SUPABASE_KEY = "YOUR_SUPABASE_ANON_KEY";
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
 
-const dropZone = document.getElementById("drop-zone");
-const statusEl = document.getElementById("status");
-const idList = document.getElementById("id-list");
-const pushBtn = document.getElementById("push-btn");
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const supabase = createClient(supabaseUrl, supabaseKey);
 
-let extractedIds = new Set();
+export default function App() {
+  const [status, setStatus] = useState("");
+  const [palletIds, setPalletIds] = useState([]);
 
-dropZone.addEventListener("dragover", (e) => {
-  e.preventDefault();
-  dropZone.style.background = "#eef";
-});
+  async function handleDrop(e) {
+    e.preventDefault();
+    const file = e.dataTransfer.files[0];
+    if (!file || file.type !== "application/pdf") {
+      alert("Please drop a PDF file.");
+      return;
+    }
+    setStatus("Extracting pallet IDs...");
+    setPalletIds([]);
 
-dropZone.addEventListener("dragleave", () => {
-  dropZone.style.background = "#fff";
-});
-
-dropZone.addEventListener("drop", async (e) => {
-  e.preventDefault();
-  dropZone.style.background = "#fff";
-
-  const file = e.dataTransfer.files[0];
-  if (!file || file.type !== "application/pdf") {
-    statusEl.textContent = "Please drop a PDF file.";
-    return;
-  }
-
-  extractedIds.clear();
-  idList.innerHTML = "";
-  pushBtn.style.display = "none";
-
-  await extractPalletIdsFromPDF(file);
-});
-
-async function extractPalletIdsFromPDF(file) {
-  statusEl.textContent = "Loading PDF...";
-  const pdfData = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: pdfData }).promise;
-
-  statusEl.textContent = `PDF loaded: ${pdf.numPages} pages. Starting OCR...`;
-
-  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-    statusEl.textContent = `Processing page ${pageNum} of ${pdf.numPages}...`;
-    console.log(`Processing page ${pageNum}/${pdf.numPages}`);
-
-    const page = await pdf.getPage(pageNum);
-    const viewport = page.getViewport({ scale: 2 });
-    const canvas = document.createElement("canvas");
-    const ctx = canvas.getContext("2d");
-    canvas.height = viewport.height;
-    canvas.width = viewport.width;
-
-    await page.render({ canvasContext: ctx, viewport }).promise;
-
-    const { data: { text } } = await Tesseract.recognize(canvas, "eng", {
-      logger: m => console.log(`Tesseract [page ${pageNum}]:`, m)
-    });
-
-    console.log(`OCR text for page ${pageNum}:`, text);
-
-    const matches = text.replace(/\s/g, "").match(/\d{18}/g);
-    if (matches) {
-      matches.forEach(id => extractedIds.add(id));
+    try {
+      const ids = await extractPalletIdsFromPDF(file);
+      setPalletIds(ids);
+      setStatus(ids.length ? `Found ${ids.length} pallet IDs` : "No pallet IDs found.");
+    } catch (err) {
+      console.error(err);
+      setStatus("Error extracting pallet IDs.");
     }
   }
 
-  if (extractedIds.size > 0) {
-    statusEl.textContent = `✅ Found ${extractedIds.size} pallet IDs`;
-    displayIds();
-    pushBtn.style.display = "inline-block";
-  } else {
-    statusEl.textContent = "❌ No pallet IDs found in this PDF.";
+  async function extractPalletIdsFromPDF(file) {
+    const arrayBuffer = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    const worker = await createWorker("eng");
+
+    const ids = new Set();
+    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+      const page = await pdf.getPage(pageNum);
+      const viewport = page.getViewport({ scale: 2.0 });
+      const canvas = document.createElement("canvas");
+      const context = canvas.getContext("2d");
+      canvas.height = viewport.height;
+      canvas.width = viewport.width;
+      await page.render({ canvasContext: context, viewport }).promise;
+
+      const { data: { text } } = await worker.recognize(canvas);
+      const found = text.match(/\b\d{18}\b/g);
+      if (found) found.forEach(id => ids.add(id));
+    }
+
+    await worker.terminate();
+    return Array.from(ids);
   }
-}
 
-function displayIds() {
-  idList.innerHTML = "";
-  extractedIds.forEach(id => {
-    const li = document.createElement("li");
-    li.textContent = id;
-    idList.appendChild(li);
-  });
-}
+  async function pushToSupabase() {
+    if (!palletIds.length) return;
+    const { error } = await supabase
+      .from("pallets")
+      .insert(palletIds.map(id => ({ pallet_id: id })));
+    if (error) alert(`Error: ${error.message}`);
+    else alert("Pallet IDs pushed to Supabase!");
+  }
 
-pushBtn.addEventListener("click", async () => {
-  statusEl.textContent = "Pushing to Supabase...";
-  const { error } = await supabase.from("NDAs").insert(
-    Array.from(extractedIds).map(id => ({
-      pallet_id: id,
-      document_name: "Uploaded PDF",
-      page_number: 1
-    }))
+  return (
+    <div>
+      <h1>Pallet ID Extractor</h1>
+      <div
+        id="drop-zone"
+        onDragOver={e => e.preventDefault()}
+        onDrop={handleDrop}
+        style={{
+          border: "3px dashed #666",
+          padding: "40px",
+          width: "300px",
+          margin: "20px auto",
+          cursor: "pointer"
+        }}
+      >
+        Drop PDF here
+      </div>
+      <p>{status}</p>
+      <ul>
+        {palletIds.map(id => (
+          <li key={id}>{id}</li>
+        ))}
+      </ul>
+      {palletIds.length > 0 && (
+        <button onClick={pushToSupabase}>Push to Supabase</button>
+      )}
+    </div>
   );
-  if (error) {
-    statusEl.textContent = "❌ Error pushing to Supabase: " + error.message;
-  } else {
-    statusEl.textContent = "✅ Data pushed to Supabase!";
-  }
-});
+}
