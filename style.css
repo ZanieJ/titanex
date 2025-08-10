@@ -1,28 +1,32 @@
 body {
-  font-family: sans-serif;
-  background: #f9f9f9;
-  margin: 0;
-  padding: 0;
-}
-
-.dropzone {
-  border: 2px dashed #888;
-  padding: 2rem;
+  font-family: Arial, sans-serif;
   text-align: center;
-  margin-top: 2rem;
-  background: white;
+  padding: 20px;
 }
 
-button {
-  padding: 0.5rem 1rem;
-  font-size: 1rem;
-  margin-top: 1rem;
+#drop-zone {
+  border: 3px dashed #666;
+  padding: 40px;
+  width: 300px;
+  margin: 20px auto;
   cursor: pointer;
 }
 
-.results {
-  margin-top: 2rem;
-  background: white;
-  padding: 1rem;
-  border-radius: 6px;
+#drop-zone.dragover {
+  background-color: #f0f0f0;
+}
+
+#status {
+  margin-top: 20px;
+  font-weight: bold;
+}
+
+#pallet-list {
+  list-style: none;
+  padding: 0;
+}
+
+#push-btn {
+  margin-top: 20px;
+  padding: 10px 20px;
 }
