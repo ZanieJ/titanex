@@ -1,14 +1,15 @@
-import React, { useState, useRef } from 'react'
+import React, { useState, useRef, useCallback } from 'react'
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf'
 import { createWorker } from 'tesseract.js'
 import { createClient } from '@supabase/supabase-js'
 
-// Configure pdf worker
+// Set up pdf.js worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   'pdfjs-dist/build/pdf.worker.min.js',
   import.meta.url
 ).toString()
 
+// Supabase setup
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY
 const supabase = createClient(supabaseUrl, supabaseKey)
@@ -16,199 +17,142 @@ const supabase = createClient(supabaseUrl, supabaseKey)
 export default function App() {
   const [processing, setProcessing] = useState(false)
   const [status, setStatus] = useState('')
-  const [results, setResults] = useState([]) // {palletId, page, documentName}
+  const [results, setResults] = useState([])
   const fileRef = useRef(null)
 
-  async function handleFile(e) {
-    const file = e.target.files?.[0]
+  // Extract text from PDF using pdf.js + Tesseract.js
+  const handleFile = useCallback(async (file) => {
     if (!file) return
-    setResults([])
-    setStatus('Reading PDF...')
+    if (file.type !== 'application/pdf') {
+      setStatus('❌ Please select a PDF file.')
+      return
+    }
+
     setProcessing(true)
+    setStatus('📄 Reading PDF...')
 
     try {
-      const arrayBuffer = await file.arrayBuffer()
-      const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer })
-      const pdf = await loadingTask.promise
-      const numPages = pdf.numPages
-      setStatus(`PDF loaded, ${numPages} pages — starting OCR in parallel...`)
+      const pdfData = new Uint8Array(await file.arrayBuffer())
+      const pdf = await pdfjsLib.getDocument({ data: pdfData }).promise
+      const worker = await createWorker('eng')
 
-      // helper to render a page to canvas and return image data (use data URL)
-      async function renderPageToDataUrl(pageNumber) {
-        const page = await pdf.getPage(pageNumber)
-        const scale = 2.0 // scale for better OCR accuracy
-        const viewport = page.getViewport({ scale })
-        // create canvas
-        let canvas
-        let ctx
-        if (typeof OffscreenCanvas !== 'undefined') {
-          canvas = new OffscreenCanvas(viewport.width, viewport.height)
-          ctx = canvas.getContext('2d')
-        } else {
-          canvas = document.createElement('canvas')
-          canvas.width = Math.round(viewport.width)
-          canvas.height = Math.round(viewport.height)
-          ctx = canvas.getContext('2d')
-        }
+      let allText = ''
+      for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+        setStatus(`🔍 Processing page ${pageNum} of ${pdf.numPages}...`)
+        const page = await pdf.getPage(pageNum)
+        const viewport = page.getViewport({ scale: 2 })
+        const canvas = document.createElement('canvas')
+        const context = canvas.getContext('2d')
+        canvas.height = viewport.height
+        canvas.width = viewport.width
+        await page.render({ canvasContext: context, viewport }).promise
 
-        const renderContext = {
-          canvasContext: ctx,
-          viewport
-        }
-
-        await page.render(renderContext).promise
-
-        // convert offscreen canvas to blob/dataURL
-        if (canvas.convertToBlob) {
-          const blob = await canvas.convertToBlob()
-          return URL.createObjectURL(blob)
-        } else {
-          return canvas.toDataURL('image/png')
-        }
+        const {
+          data: { text },
+        } = await worker.recognize(canvas)
+        allText += text + '\n'
       }
 
-      // For each page: produce image URL then OCR with tesseract.
-      const pageNumbers = Array.from({ length: numPages }, (_, i) => i + 1)
+      await worker.terminate()
 
-      // Create a worker for each page, run in parallel:
-      const ocrPromises = pageNumbers.map(async (pageNo, idx) => {
-        setStatus(`Rendering page ${pageNo}...`)
-        const dataUrl = await renderPageToDataUrl(pageNo)
+      // Extract pallet IDs (example: lines starting with PAL)
+      const palletIds = allText
+        .split(/\s+/)
+        .filter((word) => /^[A-Za-z0-9-]+$/.test(word))
 
-        setStatus(`OCR page ${pageNo}...`)
-        // spawn a worker per page (parallel)
-        const worker = createWorker({
-          logger: (m) => {
-            // small progress updates (optional)
-            // We won't spam UI but can log for debug
-            // console.log('tesseract', pageNo, m)
-          }
+      setStatus(`📦 Found ${palletIds.length} possible IDs. Looking up in Supabase...`)
+
+      const resultsMap = []
+      for (const id of palletIds) {
+        const { data, error } = await supabase
+          .from('NDAs')
+          .select('document_name, page_number')
+          .eq('pallet_id', id)
+
+        resultsMap.push({
+          id,
+          data: error ? { error: error.message } : data,
         })
+      }
 
-        await worker.load()
-        await worker.loadLanguage('eng')
-        await worker.initialize('eng')
-        // set page segmentation or OEM if you want:
-        // await worker.setParameters({ tessedit_pageseg_mode: '3' })
-
-        const { data } = await worker.recognize(dataUrl)
-        await worker.terminate()
-
-        // extract 18-digit numbers
-        const text = data?.text || ''
-        const matches = text.match(/\b\d{18}\b/g) || []
-        // create result entries (dedupe on page)
-        const uniqueMatches = Array.from(new Set(matches))
-        return uniqueMatches.map((palletId) => ({
-          palletId,
-          page: pageNo,
-          documentName: file.name
-        }))
-      })
-
-      // Wait for all pages to be OCR'd
-      const pagesResults = await Promise.all(ocrPromises)
-      // flatten
-      const flat = pagesResults.flat()
-      // optionally dedupe globally (same palletID on multiple pages may be valid; we keep duplicates with their page)
-      setResults(flat)
-      setStatus(`OCR done. Found ${flat.length} pallet IDs.`)
+      setResults(resultsMap)
+      setStatus('✅ Done!')
     } catch (err) {
       console.error(err)
-      setStatus('Error: ' + String(err))
+      setStatus(`❌ Error: ${err.message}`)
     } finally {
       setProcessing(false)
     }
+  }, [])
+
+  // Drag-and-drop handlers
+  const handleDrop = (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const file = e.dataTransfer.files?.[0]
+    if (file) handleFile(file)
   }
 
-  async function uploadToSupabase() {
-    if (!results.length) return
-    setStatus('Uploading to Supabase...')
-    setProcessing(true)
-    try {
-      // Prepare rows (NDAs table). The table has columns pallet_id, document_name, page_number
-      const rows = results.map((r) => ({
-        pallet_id: r.palletId,
-        document_name: r.documentName,
-        page_number: r.page
-      }))
-
-      // Insert in batches to avoid very large inserts — do up to 200 per batch
-      const batchSize = 200
-      for (let i = 0; i < rows.length; i += batchSize) {
-        const chunk = rows.slice(i, i + batchSize)
-        const { data, error } = await supabase.from('NDAs').insert(chunk)
-        if (error) {
-          console.error('Supabase insert error', error)
-          setStatus('Supabase error: ' + error.message)
-          setProcessing(false)
-          return
-        }
-      }
-
-      setStatus(`Uploaded ${rows.length} records to Supabase.`)
-    } catch (err) {
-      console.error(err)
-      setStatus('Upload error: ' + String(err))
-    } finally {
-      setProcessing(false)
-    }
+  const handleDragOver = (e) => {
+    e.preventDefault()
+    e.stopPropagation()
   }
 
   return (
-    <div className="container">
-      <div className="header">
-        <div>
-          <h1>📦 Pallet ID Extractor</h1>
-          <div className="small">Select a scanned PDF to extract 18-digit pallet IDs (multi-page, runs OCR per page).</div>
+    <div
+      className="drop-zone"
+      onDrop={handleDrop}
+      onDragOver={handleDragOver}
+      style={{
+        border: '2px dashed #aaa',
+        padding: '2rem',
+        textAlign: 'center',
+        background: '#fafafa',
+        minHeight: '100vh',
+      }}
+    >
+      <div className="container" style={{ maxWidth: '800px', margin: '0 auto' }}>
+        <h1>📦 Pallet ID Extractor</h1>
+
+        <input
+          ref={fileRef}
+          type="file"
+          accept="application/pdf"
+          style={{ display: 'none' }}
+          onChange={(e) => handleFile(e.target.files?.[0])}
+        />
+        <button
+          onClick={() => fileRef.current?.click()}
+          disabled={processing}
+          style={{ padding: '0.5rem 1rem', fontSize: '1rem' }}
+        >
+          Choose PDF
+        </button>
+        <div style={{ marginTop: '1rem', fontSize: '0.9rem', color: '#666' }}>
+          or drag and drop your PDF here
         </div>
 
-        <div className="controls">
-          <input
-            ref={fileRef}
-            type="file"
-            accept="application/pdf"
-            onChange={handleFile}
-            disabled={processing}
-          />
-          <button
-            className="btn"
-            onClick={() => {
-              if (fileRef.current) fileRef.current.click()
-            }}
-            disabled={processing}
-          >
-            Choose PDF
-          </button>
-        </div>
-      </div>
+        <div style={{ marginTop: '1rem', fontStyle: 'italic' }}>{status}</div>
 
-      <div className="card">
-        <div className="status">{status}</div>
-
-        <div className="list">
-          {results.length === 0 && <div className="small">No pallet IDs extracted yet.</div>}
-          {results.map((r, idx) => (
-            <div className="row" key={`${r.palletId}-${idx}`}>
-              <div style={{ flex: 1 }}>
-                <div className="id">{r.palletId}</div>
-                <div className="meta">Document: {r.documentName} — Page: {r.page}</div>
-              </div>
+        <div style={{ marginTop: '2rem', textAlign: 'left' }}>
+          {results.map(({ id, data }, idx) => (
+            <div key={idx} style={{ marginBottom: '1rem' }}>
+              <strong>{id}</strong>
+              <ul>
+                {data.error ? (
+                  <li style={{ color: 'red' }}>{data.error}</li>
+                ) : data.length === 0 ? (
+                  <li style={{ color: 'red' }}>❌ No match found</li>
+                ) : (
+                  data.map((entry, eIdx) => (
+                    <li key={eIdx}>
+                      📄 {entry.document_name} – Page {entry.page_number}
+                    </li>
+                  ))
+                )}
+              </ul>
             </div>
           ))}
-        </div>
-
-        <div className="footer">
-          <div className="small">Found: {results.length} pallet ID{results.length === 1 ? '' : 's'}</div>
-          <div>
-            <button
-              className="btn"
-              onClick={uploadToSupabase}
-              disabled={processing || results.length === 0}
-            >
-              Upload to Supabase
-            </button>
-          </div>
         </div>
       </div>
     </div>
