@@ -3,8 +3,10 @@ import * as pdfjsLib from "pdfjs-dist";
 import { createWorker } from "tesseract.js";
 import { createClient } from "@supabase/supabase-js";
 
+// PDF.js worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
 
+// Supabase
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
@@ -12,6 +14,18 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 export default function App() {
   const [status, setStatus] = useState("");
   const [palletIds, setPalletIds] = useState([]);
+
+  // ---- IMAGE PREPROCESSING ----
+  function preprocessImageData(imageData) {
+    const { data, width, height } = imageData;
+    for (let i = 0; i < data.length; i += 4) {
+      // grayscale
+      const avg = (data[i] + data[i + 1] + data[i + 2]) / 3;
+      const val = avg > 150 ? 255 : 0; // threshold
+      data[i] = data[i + 1] = data[i + 2] = val;
+    }
+    return new ImageData(data, width, height);
+  }
 
   async function handleDrop(e) {
     e.preventDefault();
@@ -37,32 +51,32 @@ export default function App() {
     const arrayBuffer = await file.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
 
-    // Create OCR worker (no loadLanguage or initialize needed in v5)
-    const worker = await createWorker();
-    await worker.setParameters({
-      tessedit_char_whitelist: "0123456789", // only numbers
-    });
+    // Worker with digits language
+    const worker = await createWorker("eng", 1, { logger: null });
 
     const ids = new Set();
-
     for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-      setStatus(`Processing page ${pageNum} of ${pdf.numPages}...`);
       const page = await pdf.getPage(pageNum);
-      const viewport = page.getViewport({ scale: 3.0 }); // higher scale for OCR clarity
+      const viewport = page.getViewport({ scale: 3.0 }); // High scale
       const canvas = document.createElement("canvas");
       const context = canvas.getContext("2d");
       canvas.height = viewport.height;
       canvas.width = viewport.width;
       await page.render({ canvasContext: context, viewport }).promise;
 
-      // Recognize text from image
-      const {
-        data: { text },
-      } = await worker.recognize(canvas);
+      // Preprocess
+      const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+      const processedData = preprocessImageData(imageData);
+      context.putImageData(processedData, 0, 0);
 
-      // Match 18-digit numbers
+      // OCR
+      const { data: { text } } = await worker.recognize(canvas, {
+        tessedit_char_whitelist: "0123456789",
+      });
+
+      // Find exactly 18-digit sequences
       const found = text.match(/\b\d{18}\b/g);
-      if (found) found.forEach((id) => ids.add(id));
+      if (found) found.forEach(id => ids.add(id));
     }
 
     await worker.terminate();
@@ -73,7 +87,7 @@ export default function App() {
     if (!palletIds.length) return;
     const { error } = await supabase
       .from("pallets")
-      .insert(palletIds.map((id) => ({ pallet_id: id })));
+      .insert(palletIds.map(id => ({ pallet_id: id })));
     if (error) alert(`Error: ${error.message}`);
     else alert("Pallet IDs pushed to Supabase!");
   }
@@ -83,21 +97,21 @@ export default function App() {
       <h1>Pallet ID Extractor</h1>
       <div
         id="drop-zone"
-        onDragOver={(e) => e.preventDefault()}
+        onDragOver={e => e.preventDefault()}
         onDrop={handleDrop}
         style={{
           border: "3px dashed #666",
           padding: "40px",
           width: "300px",
           margin: "20px auto",
-          cursor: "pointer",
+          cursor: "pointer"
         }}
       >
         Drop PDF here
       </div>
       <p>{status}</p>
       <ul>
-        {palletIds.map((id) => (
+        {palletIds.map(id => (
           <li key={id}>{id}</li>
         ))}
       </ul>
