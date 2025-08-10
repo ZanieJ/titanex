@@ -44,23 +44,46 @@ export default function App() {
       setStatus(`Processing page ${pageNum} of ${pdf.numPages}...`);
 
       const page = await pdf.getPage(pageNum);
-      const viewport = page.getViewport({ scale: 2.0 });
+      const viewport = page.getViewport({ scale: 3.0 }); // higher resolution
       const canvas = document.createElement("canvas");
       const context = canvas.getContext("2d");
       canvas.height = viewport.height;
       canvas.width = viewport.width;
-
       await page.render({ canvasContext: context, viewport }).promise;
 
-      // ✅ FIX: Convert canvas to Blob for Tesseract
+      // Preprocess for better OCR
+      const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+      const pixels = imageData.data;
+      for (let i = 0; i < pixels.length; i += 4) {
+        const avg = (pixels[i] + pixels[i + 1] + pixels[i + 2]) / 3;
+        const bw = avg > 180 ? 255 : 0;
+        pixels[i] = bw;
+        pixels[i + 1] = bw;
+        pixels[i + 2] = bw;
+      }
+      context.putImageData(imageData, 0, 0);
+
       const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
 
       const {
-        data: { text }
-      } = await worker.recognize(blob);
+        data: { text },
+      } = await worker.recognize(blob, {
+        tessedit_char_whitelist: "0123456789OolI- ",
+      });
 
-      const found = text.match(/\b\d{18}\b/g);
-      if (found) found.forEach((id) => ids.add(id));
+      const cleanedText = text
+        .replace(/[Oo]/g, "0")
+        .replace(/[lI]/g, "1")
+        .replace(/[^0-9]/g, " ");
+
+      // Match sequences that could be 18-digit IDs, allowing spaces
+      const matches = cleanedText.match(/(?:\d\s*){18,18}/g);
+      if (matches) {
+        matches.forEach((m) => {
+          const pure = m.replace(/\s+/g, "");
+          if (pure.length === 18) ids.add(pure);
+        });
+      }
     }
 
     await worker.terminate();
