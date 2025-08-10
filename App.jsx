@@ -3,10 +3,8 @@ import * as pdfjsLib from "pdfjs-dist";
 import { createWorker } from "tesseract.js";
 import { createClient } from "@supabase/supabase-js";
 
-// Configure PDF.js worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
 
-// Supabase setup
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
@@ -27,7 +25,7 @@ export default function App() {
 
     try {
       const ids = await extractPalletIdsFromPDF(file);
-      setPalletIds(ids);
+      setPalletIds(Array.isArray(ids) ? ids : []);
       setStatus(ids.length ? `Found ${ids.length} pallet IDs` : "No pallet IDs found.");
     } catch (err) {
       console.error(err);
@@ -38,30 +36,31 @@ export default function App() {
   async function extractPalletIdsFromPDF(file) {
     const arrayBuffer = await file.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-
-    // Create OCR worker without deprecated calls
-    const worker = await createWorker({ logger: null });
+    const worker = await createWorker(); // No loadLanguage / initialize (deprecated)
 
     const ids = new Set();
-    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-      setStatus(`Processing page ${pageNum} of ${pdf.numPages}...`);
 
+    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
       const page = await pdf.getPage(pageNum);
-      const viewport = page.getViewport({ scale: 2.0 });
+      const viewport = page.getViewport({ scale: 3.0 }); // Higher DPI for better OCR
       const canvas = document.createElement("canvas");
       const context = canvas.getContext("2d");
       canvas.height = viewport.height;
       canvas.width = viewport.width;
       await page.render({ canvasContext: context, viewport }).promise;
 
-      // Run OCR on page image, restricting to digits
-      const { data: { text } } = await worker.recognize(canvas, {
-        lang: "eng",
-        tessedit_char_whitelist: "0123456789",
+      // Convert canvas to blob for Tesseract
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+
+      const {
+        data: { text }
+      } = await worker.recognize(blob, "eng", {
+        tessedit_char_whitelist: "0123456789"
       });
 
+      // Match EXACTLY 18-digit numbers
       const found = text.match(/\b\d{18}\b/g);
-      if (found) found.forEach(id => ids.add(id));
+      if (found) found.forEach((id) => ids.add(id));
     }
 
     await worker.terminate();
@@ -69,10 +68,14 @@ export default function App() {
   }
 
   async function pushToSupabase() {
-    if (!palletIds.length) return;
+    if (!Array.isArray(palletIds) || palletIds.length === 0) {
+      alert("No pallet IDs to push.");
+      return;
+    }
     const { error } = await supabase
       .from("pallets")
-      .insert(palletIds.map(id => ({ pallet_id: id })));
+      .insert(palletIds.map((id) => ({ pallet_id: id })));
+
     if (error) alert(`Error: ${error.message}`);
     else alert("Pallet IDs pushed to Supabase!");
   }
@@ -82,27 +85,25 @@ export default function App() {
       <h1>Pallet ID Extractor</h1>
       <div
         id="drop-zone"
-        onDragOver={e => e.preventDefault()}
+        onDragOver={(e) => e.preventDefault()}
         onDrop={handleDrop}
         style={{
           border: "3px dashed #666",
           padding: "40px",
           width: "300px",
           margin: "20px auto",
-          cursor: "pointer",
+          cursor: "pointer"
         }}
       >
         Drop PDF here
       </div>
       <p>{status}</p>
       <ul>
-        {palletIds.map(id => (
+        {palletIds.map((id) => (
           <li key={id}>{id}</li>
         ))}
       </ul>
-      {palletIds.length > 0 && (
-        <button onClick={pushToSupabase}>Push to Supabase</button>
-      )}
+      {palletIds.length > 0 && <button onClick={pushToSupabase}>Push to Supabase</button>}
     </div>
   );
 }
