@@ -1,122 +1,113 @@
 import React, { useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
+// Get from environment (Netlify)
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 export default function App() {
   const [palletIds, setPalletIds] = useState([]);
-  const [statusMsg, setStatusMsg] = useState("");
-  const [fileDropped, setFileDropped] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [pushStatus, setPushStatus] = useState("");
 
-  const extractTextFromPdf = async (file) => {
+  const extractTextFromPDF = async (file) => {
     try {
-      setStatusMsg(`Reading PDF: ${file.name}...`);
       const arrayBuffer = await file.arrayBuffer();
       const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
       let fullText = "";
 
-      for (let i = 1; i <= pdf.numPages; i++) {
-        const page = await pdf.getPage(i);
+      for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+        const page = await pdf.getPage(pageNum);
         const textContent = await page.getTextContent();
         const pageText = textContent.items.map((item) => item.str).join(" ");
-
-        if (pageText.trim()) {
-          fullText += "\n" + pageText;
-        } else {
-          setStatusMsg(`Running OCR on page ${i}...`);
-          const viewport = page.getViewport({ scale: 2 });
-          const canvas = document.createElement("canvas");
-          const context = canvas.getContext("2d");
-          canvas.height = viewport.height;
-          canvas.width = viewport.width;
-          await page.render({ canvasContext: context, viewport }).promise;
-
-          const { data: { text: ocrText } } = await Tesseract.recognize(canvas, "eng");
-          fullText += "\n" + ocrText;
-        }
+        fullText += "\n" + pageText;
       }
 
-      setStatusMsg("✅ PDF text extraction complete.");
       return fullText;
     } catch (err) {
       console.error("PDF extraction error:", err);
-      setStatusMsg("❌ Failed to read PDF.");
       return "";
     }
   };
 
-  const extractTextFromImage = async (file) => {
-    setStatusMsg(`Running OCR on image: ${file.name}...`);
-    const { data: { text } } = await Tesseract.recognize(file, "eng");
-    setStatusMsg("✅ Image OCR complete.");
-    return text;
-  };
-
   const handleDrop = async (e) => {
     e.preventDefault();
-    setFileDropped(true);
+    setLoading(true);
+    setPalletIds([]);
+    setPushStatus("");
+
     const file = e.dataTransfer.files[0];
-    let extractedText = "";
-
-    if (!file) return;
-
-    if (file.type === "application/pdf") {
-      extractedText = await extractTextFromPdf(file);
-    } else if (file.type.startsWith("image/")) {
-      extractedText = await extractTextFromImage(file);
-    } else {
-      setStatusMsg("❌ Unsupported file type.");
+    if (!file || !file.name.toLowerCase().endsWith(".pdf")) {
+      alert("Please drop a PDF file.");
+      setLoading(false);
       return;
     }
 
-    const ids = extractedText.match(/\b\d{18,}\b/g) || [];
-    setPalletIds([...new Set(ids)]);
+    const text = await extractTextFromPDF(file);
+
+    // Extract exactly 18-digit IDs
+    const ids = [...new Set(text.match(/\b\d{18}\b/g) || [])];
+
     if (ids.length === 0) {
-      setStatusMsg("⚠ No pallet IDs found in file.");
+      alert("No pallet IDs found in this file.");
     }
+
+    setPalletIds(ids);
+    setLoading(false);
   };
 
-  const handleSupabasePush = async () => {
-    if (palletIds.length === 0) {
-      setStatusMsg("⚠ No pallet IDs to push.");
-      return;
-    }
+  const handlePushToSupabase = async () => {
+    if (!palletIds.length) return;
+    setPushStatus("Pushing...");
 
-    setStatusMsg("📤 Pushing to Supabase...");
-    const { data, error } = await supabase
-      .from("NDAs")
-      .insert(palletIds.map(id => ({ pallet_id: id })));
+    try {
+      const { data, error } = await supabase
+        .from("NDAs")
+        .insert(palletIds.map((id) => ({ pallet_id: id })));
 
-    if (error) {
-      setStatusMsg(`❌ Supabase error: ${error.message}`);
-    } else {
-      setStatusMsg(`✅ Successfully pushed ${palletIds.length} IDs.`);
+      if (error) throw error;
+
+      setPushStatus(`✅ Successfully pushed ${palletIds.length} IDs to Supabase`);
+    } catch (err) {
+      console.error(err);
+      setPushStatus("❌ Error pushing to Supabase: " + err.message);
     }
   };
 
   return (
-    <div>
-      <div
-        id="dropzone"
-        onDragOver={(e) => e.preventDefault()}
-        onDrop={handleDrop}
-      >
-        Drop PDF or image here
-      </div>
+    <div
+      onDrop={handleDrop}
+      onDragOver={(e) => e.preventDefault()}
+      style={{
+        padding: "2rem",
+        maxWidth: "800px",
+        margin: "0 auto",
+        textAlign: "center",
+        border: "2px dashed #aaa",
+        borderRadius: "8px",
+        background: "#f9f9f9"
+      }}
+    >
+      <h2>Pallet ID Extractor</h2>
+      <p>Drop a PDF file here to extract pallet IDs (18 digits each)</p>
 
-      <textarea
-        value={palletIds.join("\n")}
-        readOnly
-        placeholder="Extracted pallet IDs will appear here..."
-      />
+      {loading && <p>⏳ Extracting...</p>}
 
-      {fileDropped && (
-        <button onClick={handleSupabasePush}>Push to Supabase</button>
+      {!loading && palletIds.length > 0 && (
+        <div style={{ marginTop: "1rem", textAlign: "left" }}>
+          <h3>Found IDs:</h3>
+          <ul>
+            {palletIds.map((id) => (
+              <li key={id}>{id}</li>
+            ))}
+          </ul>
+          <button onClick={handlePushToSupabase} style={{ marginTop: "1rem" }}>
+            Push to Supabase
+          </button>
+          {pushStatus && <p>{pushStatus}</p>}
+        </div>
       )}
-
-      <div className="status">{statusMsg}</div>
     </div>
   );
 }
