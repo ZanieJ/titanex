@@ -71,7 +71,7 @@ export default function App() {
       return;
     }
 
-    const ids = extractedText.match(/\b\d{10,}\b/g) || [];
+    const ids = extractedText.match(/\b\d{18,}\b/g) || [];
     setPalletIds([...new Set(ids)]);
     if (ids.length === 0) {
       setStatusMsg("⚠ No pallet IDs found in file.");
