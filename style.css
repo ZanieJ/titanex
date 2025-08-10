@@ -1,32 +1,4 @@
 body {
   font-family: Arial, sans-serif;
   text-align: center;
-  padding: 20px;
-}
-
-#drop-zone {
-  border: 3px dashed #666;
-  padding: 40px;
-  width: 300px;
-  margin: 20px auto;
-  cursor: pointer;
-}
-
-#drop-zone.dragover {
-  background-color: #f0f0f0;
-}
-
-#status {
-  margin-top: 20px;
-  font-weight: bold;
-}
-
-#pallet-list {
-  list-style: none;
-  padding: 0;
-}
-
-#push-btn {
-  margin-top: 20px;
-  padding: 10px 20px;
 }
