@@ -2,30 +2,17 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Pallet ID OCR Extractor</title>
-  <style>
-    body { font-family: sans-serif; background: #f9f9f9; padding: 2rem; }
-    #drop-zone {
-      border: 2px dashed #888; padding: 2rem; text-align: center;
-      background: #fff; cursor: pointer;
-    }
-    #status { margin-top: 1rem; color: #333; }
-    button { padding: 0.5rem 1rem; margin-top: 1rem; font-size: 1rem; }
-    ul { margin-top: 1rem; }
-  </style>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Pallet ID Extractor</title>
+  <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
   <h1>Pallet ID Extractor</h1>
   <div id="drop-zone">Drop PDF here</div>
   <div id="status"></div>
-  <ul id="id-list"></ul>
+  <ul id="pallet-list"></ul>
   <button id="push-btn" style="display:none;">Push to Supabase</button>
 
-  <!-- PDF.js -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.2.67/pdf.min.js"></script>
-  <!-- Tesseract.js -->
-  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
-  <!-- Our app -->
-  <script type="module" src="/App.js"></script>
+  <script type="module" src="./app.js"></script>
 </body>
 </html>
