@@ -36,46 +36,33 @@ export default function App() {
   async function extractPalletIdsFromPDF(file) {
     const arrayBuffer = await file.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+
+    // Create OCR worker (no loadLanguage or initialize needed in v5)
     const worker = await createWorker();
+    await worker.setParameters({
+      tessedit_char_whitelist: "0123456789", // only numbers
+    });
 
     const ids = new Set();
-
-    await worker.loadLanguage("eng");
-    await worker.initialize("eng");
-    await worker.setParameters({
-      tessedit_char_whitelist: "0123456789",
-      preserve_interword_spaces: "1"
-    });
 
     for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
       setStatus(`Processing page ${pageNum} of ${pdf.numPages}...`);
       const page = await pdf.getPage(pageNum);
-      const viewport = page.getViewport({ scale: 3.0 }); // higher scale for sharper image
-
+      const viewport = page.getViewport({ scale: 3.0 }); // higher scale for OCR clarity
       const canvas = document.createElement("canvas");
       const context = canvas.getContext("2d");
       canvas.height = viewport.height;
       canvas.width = viewport.width;
       await page.render({ canvasContext: context, viewport }).promise;
 
-      // Preprocess image (grayscale + threshold for OCR)
-      const imgData = context.getImageData(0, 0, canvas.width, canvas.height);
-      for (let i = 0; i < imgData.data.length; i += 4) {
-        const avg = (imgData.data[i] + imgData.data[i + 1] + imgData.data[i + 2]) / 3;
-        const val = avg > 150 ? 255 : 0; // threshold
-        imgData.data[i] = imgData.data[i + 1] = imgData.data[i + 2] = val;
-      }
-      context.putImageData(imgData, 0, 0);
-
-      // Pass processed image to OCR
-      const dataUrl = canvas.toDataURL("image/png");
+      // Recognize text from image
       const {
-        data: { text }
-      } = await worker.recognize(dataUrl);
+        data: { text },
+      } = await worker.recognize(canvas);
 
-      // Match exactly 18-digit numbers
+      // Match 18-digit numbers
       const found = text.match(/\b\d{18}\b/g);
-      if (found) found.forEach(id => ids.add(id));
+      if (found) found.forEach((id) => ids.add(id));
     }
 
     await worker.terminate();
@@ -86,7 +73,7 @@ export default function App() {
     if (!palletIds.length) return;
     const { error } = await supabase
       .from("pallets")
-      .insert(palletIds.map(id => ({ pallet_id: id })));
+      .insert(palletIds.map((id) => ({ pallet_id: id })));
     if (error) alert(`Error: ${error.message}`);
     else alert("Pallet IDs pushed to Supabase!");
   }
@@ -96,21 +83,21 @@ export default function App() {
       <h1>Pallet ID Extractor</h1>
       <div
         id="drop-zone"
-        onDragOver={e => e.preventDefault()}
+        onDragOver={(e) => e.preventDefault()}
         onDrop={handleDrop}
         style={{
           border: "3px dashed #666",
           padding: "40px",
           width: "300px",
           margin: "20px auto",
-          cursor: "pointer"
+          cursor: "pointer",
         }}
       >
         Drop PDF here
       </div>
       <p>{status}</p>
       <ul>
-        {palletIds.map(id => (
+        {palletIds.map((id) => (
           <li key={id}>{id}</li>
         ))}
       </ul>
