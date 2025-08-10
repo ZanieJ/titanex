@@ -3,10 +3,10 @@ import * as pdfjsLib from "pdfjs-dist";
 import { createWorker } from "tesseract.js";
 import { createClient } from "@supabase/supabase-js";
 
-// PDF.js worker
+// Set PDF.js worker source
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
 
-// Supabase setup
+// Supabase connection
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
@@ -38,13 +38,7 @@ export default function App() {
   async function extractPalletIdsFromPDF(file) {
     const arrayBuffer = await file.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-
-    const worker = await createWorker({
-      logger: m => console.log(m) // logs progress updates safely
-    });
-
-    await worker.loadLanguage("eng");
-    await worker.initialize("eng");
+    const worker = await createWorker("eng");
 
     const ids = new Set();
 
@@ -53,20 +47,21 @@ export default function App() {
 
       const page = await pdf.getPage(pageNum);
       const viewport = page.getViewport({ scale: 2.0 });
-
       const canvas = document.createElement("canvas");
       const context = canvas.getContext("2d");
       canvas.height = viewport.height;
       canvas.width = viewport.width;
-
       await page.render({ canvasContext: context, viewport }).promise;
 
-      const { data: { text } } = await worker.recognize(canvas);
-      console.log("OCR text:", text);
+      // ✅ FIX: Convert canvas to image data before sending to Tesseract
+      const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
 
-      // Match 18-digit pallet IDs
+      const {
+        data: { text }
+      } = await worker.recognize(imageData);
+
       const found = text.match(/\b\d{18}\b/g);
-      if (found) found.forEach(id => ids.add(id));
+      if (found) found.forEach((id) => ids.add(id));
     }
 
     await worker.terminate();
@@ -77,7 +72,7 @@ export default function App() {
     if (!palletIds.length) return;
     const { error } = await supabase
       .from("pallets")
-      .insert(palletIds.map(id => ({ pallet_id: id })));
+      .insert(palletIds.map((id) => ({ pallet_id: id })));
     if (error) alert(`Error: ${error.message}`);
     else alert("Pallet IDs pushed to Supabase!");
   }
@@ -87,21 +82,21 @@ export default function App() {
       <h1>Pallet ID Extractor</h1>
       <div
         id="drop-zone"
-        onDragOver={e => e.preventDefault()}
+        onDragOver={(e) => e.preventDefault()}
         onDrop={handleDrop}
         style={{
           border: "3px dashed #666",
           padding: "40px",
           width: "300px",
           margin: "20px auto",
-          cursor: "pointer"
+          cursor: "pointer",
         }}
       >
         Drop PDF here
       </div>
       <p>{status}</p>
       <ul>
-        {palletIds.map(id => (
+        {palletIds.map((id) => (
           <li key={id}>{id}</li>
         ))}
       </ul>
