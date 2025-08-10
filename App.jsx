@@ -11,22 +11,40 @@ const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 export default function App() {
-  const [palletInput, setPalletInput] = useState("");
+  const [palletIds, setPalletIds] = useState([]);
   const [results, setResults] = useState({});
   const [loading, setLoading] = useState(false);
+  const [statusMsg, setStatusMsg] = useState("");
 
   const extractTextFromPdf = async (file) => {
-    const arrayBuffer = await file.arrayBuffer();
-    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-    let fullText = "";
+    try {
+      setStatusMsg(`Extracting text from PDF: ${file.name}...`);
+      const arrayBuffer = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      let fullText = "";
 
-    for (let i = 1; i <= pdf.numPages; i++) {
-      const page = await pdf.getPage(i);
-      const textContent = await page.getTextContent();
-      const pageText = textContent.items.map((item) => item.str).join(" ");
-      fullText += "\n" + pageText;
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const textContent = await page.getTextContent();
+        const pageText = textContent.items.map((item) => item.str).join(" ");
+        fullText += "\n" + pageText;
+      }
+
+      setStatusMsg("PDF text extraction complete.");
+      return fullText;
+    } catch (err) {
+      console.error("PDF extraction error:", err);
+      setStatusMsg("❌ Failed to read PDF.");
+      return "";
     }
-    return fullText;
+  };
+
+  const extractPalletIds = (text) => {
+    // Adjust regex depending on pallet ID format
+    const ids = text.match(/[A-Z0-9]{6,}/g) || [];
+    const uniqueIds = [...new Set(ids)];
+    setPalletIds(uniqueIds);
+    setStatusMsg(`✅ Found ${uniqueIds.length} pallet IDs.`);
   };
 
   const handleDrop = useCallback(async (event) => {
@@ -35,28 +53,36 @@ export default function App() {
 
     if (files.length) {
       for (const file of files) {
+        let text = "";
+
         if (file.type.startsWith("image/")) {
-          const { data: { text } } = await Tesseract.recognize(file, "eng");
-          setPalletInput((prev) => prev + "\n" + text);
+          setStatusMsg(`Extracting text from image: ${file.name}...`);
+          const { data: { text: ocrText } } = await Tesseract.recognize(file, "eng");
+          text = ocrText;
         } else if (file.type === "application/pdf") {
-          const text = await extractTextFromPdf(file);
-          setPalletInput((prev) => prev + "\n" + text);
+          text = await extractTextFromPdf(file);
         } else {
           alert("Only images and PDFs are supported.");
+          return;
+        }
+
+        if (text.trim()) {
+          extractPalletIds(text);
+        } else {
+          setStatusMsg("⚠ No text found in file.");
         }
       }
     }
   }, []);
 
-  const handleLookup = async () => {
-    const palletIds = palletInput
-      .split("\n")
-      .map((id) => id.trim())
-      .filter(Boolean);
-
-    if (!palletIds.length) return;
+  const pushToSupabase = async () => {
+    if (!palletIds.length) {
+      setStatusMsg("⚠ No pallet IDs to push.");
+      return;
+    }
 
     setLoading(true);
+    setStatusMsg("Pushing pallet IDs to Supabase...");
     const resultsMap = {};
 
     for (const id of palletIds) {
@@ -69,6 +95,7 @@ export default function App() {
     }
 
     setResults(resultsMap);
+    setStatusMsg("✅ Supabase lookup complete.");
     setLoading(false);
   };
 
@@ -79,44 +106,55 @@ export default function App() {
         maxWidth: "800px",
         margin: "0 auto",
         textAlign: "center",
+        border: "2px dashed #ccc",
+        borderRadius: "10px",
       }}
       onDragOver={(e) => e.preventDefault()}
       onDrop={handleDrop}
     >
-      <h2>Pallet ID NDA Lookup</h2>
-      <p>Paste pallet IDs or drag & drop images/PDFs containing them.</p>
-      <textarea
-        rows={10}
-        placeholder="Paste pallet IDs, one per line..."
-        style={{ width: "100%", marginBottom: "1rem" }}
-        value={palletInput}
-        onChange={(e) => setPalletInput(e.target.value)}
-      />
-      <br />
-      <button onClick={handleLookup} disabled={loading}>
-        {loading ? "Looking up..." : "Lookup"}
-      </button>
+      <h2>Pallet ID Extractor</h2>
+      <p>Drop images or PDFs here. IDs will be extracted automatically.</p>
+      {statusMsg && <p><strong>{statusMsg}</strong></p>}
 
-      <div style={{ marginTop: "2rem", textAlign: "left" }}>
-        {Object.keys(results).map((id) => (
-          <div key={id} style={{ marginBottom: "1rem" }}>
-            <strong>{id}</strong>
-            <ul>
-              {results[id].error ? (
-                <li style={{ color: "red" }}>{results[id].error}</li>
-              ) : results[id].length === 0 ? (
-                <li style={{ color: "red" }}>❌ No match found</li>
-              ) : (
-                results[id].map((entry, idx) => (
-                  <li key={idx}>
-                    📄 {entry.document_name} - 📄 Page {entry.page_number}
-                  </li>
-                ))
-              )}
-            </ul>
-          </div>
-        ))}
-      </div>
+      {palletIds.length > 0 && (
+        <>
+          <h3>Extracted Pallet IDs</h3>
+          <textarea
+            rows={6}
+            style={{ width: "100%" }}
+            value={palletIds.join("\n")}
+            readOnly
+          />
+          <br />
+          <button onClick={pushToSupabase} disabled={loading}>
+            {loading ? "Pushing..." : "Push to Supabase"}
+          </button>
+        </>
+      )}
+
+      {Object.keys(results).length > 0 && (
+        <div style={{ marginTop: "2rem", textAlign: "left" }}>
+          <h3>Supabase Results</h3>
+          {Object.keys(results).map((id) => (
+            <div key={id} style={{ marginBottom: "1rem" }}>
+              <strong>{id}</strong>
+              <ul>
+                {results[id].error ? (
+                  <li style={{ color: "red" }}>{results[id].error}</li>
+                ) : results[id].length === 0 ? (
+                  <li style={{ color: "red" }}>❌ No match found</li>
+                ) : (
+                  results[id].map((entry, idx) => (
+                    <li key={idx}>
+                      📄 {entry.document_name} - 📄 Page {entry.page_number}
+                    </li>
+                  ))
+                )}
+              </ul>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
