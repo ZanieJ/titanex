@@ -1,57 +1,45 @@
-import Tesseract from 'tesseract.js';
+import * as pdfjsLib from "pdfjs-dist/build/pdf";
+import pdfjsWorker from "pdfjs-dist/build/pdf.worker.entry";
 
-const fileInput = document.getElementById('pdf-upload');
-const progressEl = document.getElementById('progress');
-const outputEl = document.getElementById('output');
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
-function setProgress(msg) {
-  progressEl.textContent = msg;
-}
+const fileInput = document.getElementById("fileInput");
+const progress = document.getElementById("progress");
+const output = document.getElementById("output");
 
-fileInput.addEventListener('change', async (event) => {
-  const file = event.target.files[0];
+fileInput.addEventListener("change", async (e) => {
+  const file = e.target.files[0];
   if (!file) return;
 
-  setProgress('Loading PDF...');
-  const pdfData = new Uint8Array(await file.arrayBuffer());
-  const pdf = await pdfjsLib.getDocument({ data: pdfData }).promise;
+  const fileReader = new FileReader();
+  fileReader.onload = async function () {
+    const typedArray = new Uint8Array(this.result);
+    const pdf = await pdfjsLib.getDocument(typedArray).promise;
 
-  let foundIds = [];
+    let foundIds = [];
+    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+      progress.textContent = `Processing page ${pageNum} of ${pdf.numPages}...`;
+      const page = await pdf.getPage(pageNum);
+      const textContent = await page.getTextContent();
+      const lines = textContent.items.map(item => item.str.trim()).filter(Boolean);
 
-  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-    setProgress(`Processing page ${pageNum} of ${pdf.numPages}...`);
-
-    const page = await pdf.getPage(pageNum);
-    const viewport = page.getViewport({ scale: 2 });
-    const canvas = document.createElement('canvas');
-    const context = canvas.getContext('2d');
-    canvas.height = viewport.height;
-    canvas.width = viewport.width;
-
-    await page.render({ canvasContext: context, viewport }).promise;
-
-    setProgress(`Running OCR on page ${pageNum}...`);
-    const { data: { text } } = await Tesseract.recognize(canvas, 'eng');
-
-    // Extract only pallet IDs under "Pallet ID" heading
-    const lines = text.split('\n').map(line => line.trim()).filter(Boolean);
-    let capture = false;
-    for (let line of lines) {
-      if (/^Pallet ID$/i.test(line)) {
-        capture = true;
-        continue;
-      }
-      if (capture && /^\d{18}$/.test(line)) {
-        foundIds.push(line);
+      const palletIndex = lines.findIndex(line => /^Pallet\s*ID$/i.test(line));
+      if (palletIndex !== -1) {
+        for (let i = palletIndex + 1; i < lines.length; i++) {
+          if (/^\d+$/.test(lines[i])) {
+            foundIds.push(lines[i]);
+          } else if (lines[i].length > 0 && !/^\d+$/.test(lines[i])) {
+            break;
+          }
+        }
       }
     }
-  }
 
-  if (foundIds.length > 0) {
-    outputEl.value = foundIds.join('\n');
-    setProgress(`Found ${foundIds.length} Pallet IDs`);
-  } else {
-    outputEl.value = '';
-    setProgress('No Pallet IDs found.');
-  }
+    progress.textContent = "";
+    output.textContent = foundIds.length > 0 
+      ? foundIds.join("\n") 
+      : "No pallet IDs found";
+  };
+
+  fileReader.readAsArrayBuffer(file);
 });
