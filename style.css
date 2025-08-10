@@ -1,12 +1,28 @@
 body {
   font-family: sans-serif;
   background: #f9f9f9;
+  margin: 0;
+  padding: 0;
 }
+
+.dropzone {
+  border: 2px dashed #888;
+  padding: 2rem;
+  text-align: center;
+  margin-top: 2rem;
+  background: white;
+}
+
 button {
   padding: 0.5rem 1rem;
   font-size: 1rem;
+  margin-top: 1rem;
+  cursor: pointer;
 }
-ul {
-  list-style: none;
-  padding-left: 0;
+
+.results {
+  margin-top: 2rem;
+  background: white;
+  padding: 1rem;
+  border-radius: 6px;
 }
