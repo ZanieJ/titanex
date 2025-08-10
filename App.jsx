@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useCallback } from "react";
 import * as pdfjsLib from "pdfjs-dist";
 import { createWorker } from "tesseract.js";
 import "pdfjs-dist/build/pdf.worker.entry";
@@ -11,8 +11,9 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 export default function App() {
   const [status, setStatus] = useState("");
   const [palletIds, setPalletIds] = useState([]);
+  const [fileName, setFileName] = useState("");
 
-  async function extractPalletIdsFromPDF(file) {
+  const extractPalletIdsFromPDF = useCallback(async (file) => {
     const arrayBuffer = await file.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
     const worker = await createWorker("eng");
@@ -23,7 +24,7 @@ export default function App() {
       setStatus(`Processing page ${pageNum} of ${pdf.numPages}...`);
 
       const page = await pdf.getPage(pageNum);
-      const viewport = page.getViewport({ scale: 3.0 }); // higher scale = better OCR
+      const viewport = page.getViewport({ scale: 3.0 }); // better OCR resolution
       const canvas = document.createElement("canvas");
       const context = canvas.getContext("2d");
       canvas.height = viewport.height;
@@ -31,28 +32,31 @@ export default function App() {
 
       await page.render({ canvasContext: context, viewport }).promise;
 
-      // OCR the image
       const { data: { text } } = await worker.recognize(canvas);
-      console.log(`OCR text from page ${pageNum}:`, text);
+      console.log(`OCR text page ${pageNum}:`, text);
 
-      // Match possible pallet IDs (adjust as needed)
-      const found = text.match(/[A-Z0-9\- ]{12,20}/gi);
+      // match exactly 18 consecutive digits
+      const found = text.match(/\b\d{18}\b/g);
       if (found) {
-        found.forEach(raw => {
-          const cleaned = raw.replace(/[^A-Z0-9]/gi, "");
-          if (cleaned.length >= 12) ids.add(cleaned);
-        });
+        found.forEach(id => ids.add(id));
       }
     }
 
     await worker.terminate();
     return Array.from(ids);
-  }
+  }, []);
 
-  async function handleFileUpload(e) {
-    const file = e.target.files[0];
-    if (!file) return;
+  const handleDrop = useCallback(async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
 
+    const file = e.dataTransfer.files[0];
+    if (!file || file.type !== "application/pdf") {
+      setStatus("Please drop a valid PDF file.");
+      return;
+    }
+
+    setFileName(file.name);
     setStatus("Extracting pallet IDs...");
     const ids = await extractPalletIdsFromPDF(file);
 
@@ -63,17 +67,27 @@ export default function App() {
       setPalletIds([]);
       setStatus("No pallet IDs found");
     }
-  }
+  }, [extractPalletIdsFromPDF]);
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
 
   return (
     <div style={styles.container}>
       <h1 style={styles.heading}>Pallet ID Extractor</h1>
-      <input
-        type="file"
-        accept="application/pdf"
-        onChange={handleFileUpload}
-        style={styles.fileInput}
-      />
+
+      <div
+        style={styles.dropZone}
+        onDrop={handleDrop}
+        onDragOver={handleDragOver}
+      >
+        {fileName
+          ? <p>{fileName}</p>
+          : <p>Drag & drop your PDF here</p>}
+      </div>
+
       <p>{status}</p>
 
       {palletIds.length > 0 && (
@@ -99,8 +113,14 @@ const styles = {
   heading: {
     marginBottom: "20px",
   },
-  fileInput: {
-    margin: "10px 0",
+  dropZone: {
+    border: "2px dashed #ccc",
+    borderRadius: "10px",
+    padding: "40px",
+    width: "80%",
+    margin: "0 auto",
+    backgroundColor: "#f9f9f9",
+    cursor: "pointer",
   },
   results: {
     marginTop: "20px",
