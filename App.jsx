@@ -3,10 +3,8 @@ import * as pdfjsLib from "pdfjs-dist";
 import { createWorker } from "tesseract.js";
 import { createClient } from "@supabase/supabase-js";
 
-// Set PDF.js worker source
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
 
-// Supabase connection
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
@@ -51,14 +49,15 @@ export default function App() {
       const context = canvas.getContext("2d");
       canvas.height = viewport.height;
       canvas.width = viewport.width;
+
       await page.render({ canvasContext: context, viewport }).promise;
 
-      // ✅ FIX: Convert canvas to image data before sending to Tesseract
-      const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+      // ✅ FIX: Convert canvas to Blob for Tesseract
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
 
       const {
         data: { text }
-      } = await worker.recognize(imageData);
+      } = await worker.recognize(blob);
 
       const found = text.match(/\b\d{18}\b/g);
       if (found) found.forEach((id) => ids.add(id));
