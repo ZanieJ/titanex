@@ -1,45 +1,88 @@
-import * as pdfjsLib from "pdfjs-dist/build/pdf";
-import pdfjsWorker from "pdfjs-dist/build/pdf.worker.entry";
+import React, { useState } from "react";
+import ReactDOM from "react-dom/client";
+import * as pdfjsLib from "pdfjs-dist";
+import pdfjsWorker from "pdfjs-dist/build/pdf.worker.mjs";
+import "./style.css";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
-const fileInput = document.getElementById("fileInput");
-const progress = document.getElementById("progress");
-const output = document.getElementById("output");
+function App() {
+  const [palletIDs, setPalletIDs] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
-fileInput.addEventListener("change", async (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
+  const handleFileUpload = async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
 
-  const fileReader = new FileReader();
-  fileReader.onload = async function () {
-    const typedArray = new Uint8Array(this.result);
-    const pdf = await pdfjsLib.getDocument(typedArray).promise;
+    setError("");
+    setLoading(true);
+    setPalletIDs([]);
 
-    let foundIds = [];
-    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-      progress.textContent = `Processing page ${pageNum} of ${pdf.numPages}...`;
-      const page = await pdf.getPage(pageNum);
-      const textContent = await page.getTextContent();
-      const lines = textContent.items.map(item => item.str.trim()).filter(Boolean);
+    try {
+      const fileReader = new FileReader();
+      fileReader.onload = async function () {
+        const typedArray = new Uint8Array(this.result);
+        const pdf = await pdfjsLib.getDocument(typedArray).promise;
 
-      const palletIndex = lines.findIndex(line => /^Pallet\s*ID$/i.test(line));
-      if (palletIndex !== -1) {
-        for (let i = palletIndex + 1; i < lines.length; i++) {
-          if (/^\d+$/.test(lines[i])) {
-            foundIds.push(lines[i]);
-          } else if (lines[i].length > 0 && !/^\d+$/.test(lines[i])) {
-            break;
+        let foundIDs = [];
+
+        for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+          const page = await pdf.getPage(pageNum);
+          const textContent = await page.getTextContent();
+          const strings = textContent.items.map((item) => item.str);
+
+          // Find "Pallet ID" header and grab values below it
+          const headerIndex = strings.findIndex(
+            (text) => text.trim().toLowerCase() === "pallet id"
+          );
+
+          if (headerIndex !== -1) {
+            for (let i = headerIndex + 1; i < strings.length; i++) {
+              const val = strings[i].trim();
+              if (/^\d+$/.test(val)) {
+                foundIDs.push(val);
+              } else {
+                // Stop if we hit the next header or unrelated text
+                break;
+              }
+            }
           }
         }
-      }
-    }
 
-    progress.textContent = "";
-    output.textContent = foundIds.length > 0 
-      ? foundIds.join("\n") 
-      : "No pallet IDs found";
+        setPalletIDs(foundIDs);
+        setLoading(false);
+      };
+      fileReader.readAsArrayBuffer(file);
+    } catch (err) {
+      console.error(err);
+      setError("Failed to read PDF");
+      setLoading(false);
+    }
   };
 
-  fileReader.readAsArrayBuffer(file);
-});
+  return (
+    <div className="app">
+      <h1>Pallet ID Extractor</h1>
+      <input type="file" accept="application/pdf" onChange={handleFileUpload} />
+      {loading && <p>Processing PDF…</p>}
+      {error && <p className="error">{error}</p>}
+      {palletIDs.length > 0 && (
+        <div className="results">
+          <h2>Extracted Pallet IDs:</h2>
+          <ul>
+            {palletIDs.map((id, idx) => (
+              <li key={idx}>{id}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);
