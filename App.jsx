@@ -36,44 +36,29 @@ export default function App() {
   async function extractPalletIdsFromPDF(file) {
     const arrayBuffer = await file.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-    const worker = await createWorker({
-      logger: m => console.log(m)
-    });
-
-    await worker.loadLanguage("eng");
-    await worker.initialize("eng");
-    await worker.setParameters({
-      tessedit_char_whitelist: "0123456789",
-    });
+    const worker = await createWorker(); // no logger to avoid DataCloneError
 
     const ids = new Set();
+
     for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+      setStatus(`Processing page ${pageNum} of ${pdf.numPages}...`);
       const page = await pdf.getPage(pageNum);
       const viewport = page.getViewport({ scale: 2.0 });
+
       const canvas = document.createElement("canvas");
       const context = canvas.getContext("2d");
       canvas.height = viewport.height;
       canvas.width = viewport.width;
       await page.render({ canvasContext: context, viewport }).promise;
 
-      // Wait for OpenCV to be ready
-      await new Promise(resolve => {
-        if (cv && cv.imread) resolve();
-        else {
-          document.addEventListener("opencvready", resolve, { once: true });
-        }
-      });
+      // Convert to image data URL before sending to worker
+      const dataUrl = canvas.toDataURL("image/png");
 
-      // Preprocess image with OpenCV
-      const src = cv.imread(canvas);
-      cv.cvtColor(src, src, cv.COLOR_RGBA2GRAY, 0);
-      cv.adaptiveThreshold(src, src, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 11, 2);
-      cv.imwrite("processed.png", src); // Debug if needed
-      cv.imshow(canvas, src);
-      src.delete();
+      const {
+        data: { text }
+      } = await worker.recognize(dataUrl);
 
-      // Run OCR
-      const { data: { text } } = await worker.recognize(canvas);
+      // match exactly 18-digit numbers
       const found = text.match(/\b\d{18}\b/g);
       if (found) found.forEach(id => ids.add(id));
     }
