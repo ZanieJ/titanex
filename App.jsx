@@ -1,6 +1,10 @@
 import React, { useState, useCallback } from "react";
 import { createClient } from "@supabase/supabase-js";
 import Tesseract from "tesseract.js";
+import * as pdfjsLib from "pdfjs-dist";
+
+// PDF.js worker
+pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -11,18 +15,34 @@ export default function App() {
   const [results, setResults] = useState({});
   const [loading, setLoading] = useState(false);
 
-  const handleDrop = useCallback((event) => {
+  const extractTextFromPdf = async (file) => {
+    const arrayBuffer = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    let fullText = "";
+
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const textContent = await page.getTextContent();
+      const pageText = textContent.items.map((item) => item.str).join(" ");
+      fullText += "\n" + pageText;
+    }
+    return fullText;
+  };
+
+  const handleDrop = useCallback(async (event) => {
     event.preventDefault();
     const files = event.dataTransfer.files;
 
     if (files.length) {
       for (const file of files) {
         if (file.type.startsWith("image/")) {
-          Tesseract.recognize(file, "eng").then(({ data: { text } }) => {
-            setPalletInput((prev) => prev + "\n" + text);
-          });
+          const { data: { text } } = await Tesseract.recognize(file, "eng");
+          setPalletInput((prev) => prev + "\n" + text);
+        } else if (file.type === "application/pdf") {
+          const text = await extractTextFromPdf(file);
+          setPalletInput((prev) => prev + "\n" + text);
         } else {
-          alert("Only image files are supported for drag & drop.");
+          alert("Only images and PDFs are supported.");
         }
       }
     }
@@ -64,7 +84,7 @@ export default function App() {
       onDrop={handleDrop}
     >
       <h2>Pallet ID NDA Lookup</h2>
-      <p>Paste pallet IDs or drag & drop an image containing them.</p>
+      <p>Paste pallet IDs or drag & drop images/PDFs containing them.</p>
       <textarea
         rows={10}
         placeholder="Paste pallet IDs, one per line..."
