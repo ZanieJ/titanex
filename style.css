@@ -1,4 +1,11 @@
 body {
   font-family: Arial, sans-serif;
-  text-align: center;
+  background: #f9f9f9;
+}
+h1 {
+  margin-bottom: 10px;
+}
+input[type="file"] {
+  display: block;
+  margin: 10px auto;
 }
