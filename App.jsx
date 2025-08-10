@@ -3,8 +3,10 @@ import * as pdfjsLib from "pdfjs-dist";
 import { createWorker } from "tesseract.js";
 import { createClient } from "@supabase/supabase-js";
 
+// PDF.js worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
 
+// Supabase setup
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
@@ -28,7 +30,7 @@ export default function App() {
       setPalletIds(ids);
       setStatus(ids.length ? `Found ${ids.length} pallet IDs` : "No pallet IDs found.");
     } catch (err) {
-      console.error("PDF extraction error:", err);
+      console.error(err);
       setStatus("Error extracting pallet IDs.");
     }
   }
@@ -38,8 +40,9 @@ export default function App() {
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
 
     const worker = await createWorker({
-      logger: m => console.log(m) // Optional: progress logs
+      logger: m => console.log(m) // logs progress updates safely
     });
+
     await worker.loadLanguage("eng");
     await worker.initialize("eng");
 
@@ -47,17 +50,21 @@ export default function App() {
 
     for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
       setStatus(`Processing page ${pageNum} of ${pdf.numPages}...`);
+
       const page = await pdf.getPage(pageNum);
       const viewport = page.getViewport({ scale: 2.0 });
+
       const canvas = document.createElement("canvas");
       const context = canvas.getContext("2d");
       canvas.height = viewport.height;
       canvas.width = viewport.width;
+
       await page.render({ canvasContext: context, viewport }).promise;
 
       const { data: { text } } = await worker.recognize(canvas);
-      console.log(`Page ${pageNum} text:`, text);
+      console.log("OCR text:", text);
 
+      // Match 18-digit pallet IDs
       const found = text.match(/\b\d{18}\b/g);
       if (found) found.forEach(id => ids.add(id));
     }
@@ -87,8 +94,7 @@ export default function App() {
           padding: "40px",
           width: "300px",
           margin: "20px auto",
-          cursor: "pointer",
-          textAlign: "center"
+          cursor: "pointer"
         }}
       >
         Drop PDF here
