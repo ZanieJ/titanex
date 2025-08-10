@@ -1,130 +1,123 @@
 import React, { useState, useCallback } from "react";
-import * as pdfjsLib from "pdfjs-dist";
-import { createWorker } from "tesseract.js";
-import "pdfjs-dist/build/pdf.worker.entry";
-
-pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-  "pdfjs-dist/build/pdf.worker.min.js",
-  import.meta.url
-).toString();
+import * as pdfjsLib from "pdfjs-dist/webpack";
+import Tesseract from "tesseract.js";
+import "./style.css";
 
 export default function App() {
-  const [status, setStatus] = useState("");
-  const [palletIds, setPalletIds] = useState([]);
   const [fileName, setFileName] = useState("");
+  const [palletIds, setPalletIds] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState("");
 
-  const extractPalletIdsFromPDF = useCallback(async (file) => {
-    const arrayBuffer = await file.arrayBuffer();
-    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-    const worker = await createWorker("eng");
+  const handleFiles = useCallback(async (files) => {
+    if (!files || files.length === 0) return;
+    const file = files[0];
+    setFileName(file.name);
+    setPalletIds([]);
+    setLoading(true);
+    setProgress("Loading PDF...");
 
-    const ids = new Set();
+    const fileReader = new FileReader();
+    fileReader.onload = async function () {
+      try {
+        const typedArray = new Uint8Array(this.result);
+        const pdf = await pdfjsLib.getDocument({ data: typedArray }).promise;
+        const ids = new Set();
 
-    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-      setStatus(`Processing page ${pageNum} of ${pdf.numPages}...`);
+        for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+          setProgress(`Processing page ${pageNum} of ${pdf.numPages}...`);
+          const page = await pdf.getPage(pageNum);
 
-      const page = await pdf.getPage(pageNum);
-      const viewport = page.getViewport({ scale: 3.0 }); // better OCR resolution
-      const canvas = document.createElement("canvas");
-      const context = canvas.getContext("2d");
-      canvas.height = viewport.height;
-      canvas.width = viewport.width;
+          const viewport = page.getViewport({ scale: 4.0 }); // higher resolution
+          const canvas = document.createElement("canvas");
+          const context = canvas.getContext("2d");
+          canvas.height = viewport.height;
+          canvas.width = viewport.width;
 
-      await page.render({ canvasContext: context, viewport }).promise;
+          await page.render({ canvasContext: context, viewport }).promise;
 
-      const { data: { text } } = await worker.recognize(canvas);
-      console.log(`OCR text page ${pageNum}:`, text);
+          const { data: { text } } = await Tesseract.recognize(
+            canvas,
+            "eng",
+            {
+              logger: (m) => {
+                if (m.status === "recognizing text") {
+                  setProgress(
+                    `OCR ${Math.round(m.progress * 100)}% on page ${pageNum}`
+                  );
+                }
+              },
+            }
+          );
 
-      // match exactly 18 consecutive digits
-      const found = text.match(/\b\d{18}\b/g);
-      if (found) {
-        found.forEach(id => ids.add(id));
+          // Fix common OCR misreads
+          let cleanedText = text
+            .replace(/[Oo]/g, "0")
+            .replace(/[lI]/g, "1");
+
+          // Match 18-digit sequences
+          const found = cleanedText.match(/\b\d{18}\b/g);
+          if (found) {
+            found.forEach((id) => ids.add(id));
+          }
+        }
+
+        setPalletIds(Array.from(ids));
+        setProgress(ids.size > 0 ? "Done" : "No pallet IDs found");
+      } catch (err) {
+        console.error(err);
+        setProgress("Error processing file");
+      } finally {
+        setLoading(false);
       }
-    }
-
-    await worker.terminate();
-    return Array.from(ids);
+    };
+    fileReader.readAsArrayBuffer(file);
   }, []);
 
-  const handleDrop = useCallback(async (e) => {
+  const handleDrop = (e) => {
     e.preventDefault();
-    e.stopPropagation();
-
-    const file = e.dataTransfer.files[0];
-    if (!file || file.type !== "application/pdf") {
-      setStatus("Please drop a valid PDF file.");
-      return;
-    }
-
-    setFileName(file.name);
-    setStatus("Extracting pallet IDs...");
-    const ids = await extractPalletIdsFromPDF(file);
-
-    if (ids.length > 0) {
-      setPalletIds(ids);
-      setStatus(`Found ${ids.length} pallet IDs`);
-    } else {
-      setPalletIds([]);
-      setStatus("No pallet IDs found");
-    }
-  }, [extractPalletIdsFromPDF]);
+    handleFiles(e.dataTransfer.files);
+  };
 
   const handleDragOver = (e) => {
     e.preventDefault();
-    e.stopPropagation();
+  };
+
+  const handleFileChange = (e) => {
+    handleFiles(e.target.files);
   };
 
   return (
-    <div style={styles.container}>
-      <h1 style={styles.heading}>Pallet ID Extractor</h1>
+    <div className="container">
+      <h1>Pallet ID Extractor</h1>
 
       <div
-        style={styles.dropZone}
+        className="drop-zone"
         onDrop={handleDrop}
         onDragOver={handleDragOver}
       >
-        {fileName
-          ? <p>{fileName}</p>
-          : <p>Drag & drop your PDF here</p>}
+        <p>Drag & Drop PDF here or click to upload</p>
+        <input type="file" accept="application/pdf" onChange={handleFileChange} />
       </div>
 
-      <p>{status}</p>
+      {fileName && <p className="file-name">{fileName}</p>}
 
-      {palletIds.length > 0 && (
-        <div style={styles.results}>
-          <h2>Extracted Pallet IDs:</h2>
+      {loading && <p>{progress}</p>}
+
+      {!loading && palletIds.length > 0 && (
+        <div>
+          <h3>Found {palletIds.length} pallet IDs</h3>
           <ul>
-            {palletIds.map((id, index) => (
-              <li key={index}>{id}</li>
+            {palletIds.map((id, idx) => (
+              <li key={idx}>{id}</li>
             ))}
           </ul>
         </div>
       )}
+
+      {!loading && palletIds.length === 0 && fileName && progress === "No pallet IDs found" && (
+        <p>No pallet IDs found</p>
+      )}
     </div>
   );
 }
-
-const styles = {
-  container: {
-    fontFamily: "Arial, sans-serif",
-    padding: "20px",
-    textAlign: "center",
-  },
-  heading: {
-    marginBottom: "20px",
-  },
-  dropZone: {
-    border: "2px dashed #ccc",
-    borderRadius: "10px",
-    padding: "40px",
-    width: "80%",
-    margin: "0 auto",
-    backgroundColor: "#f9f9f9",
-    cursor: "pointer",
-  },
-  results: {
-    marginTop: "20px",
-    textAlign: "left",
-    display: "inline-block",
-  },
-};
