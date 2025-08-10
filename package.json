@@ -1,15 +1,20 @@
 {
-  "name": "pallet-id-extractor",
+  "name": "pallet-id-reader",
   "version": "1.0.0",
+  "private": true,
+  "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview"
   },
   "dependencies": {
-    "pdfjs-dist": "^4.0.379"
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "pdfjs-dist": "^3.11.174"
   },
   "devDependencies": {
-    "vite": "^5.4.0"
+    "@vitejs/plugin-react": "^4.2.1",
+    "vite": "^5.2.0"
   }
 }
