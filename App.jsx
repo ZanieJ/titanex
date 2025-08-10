@@ -3,10 +3,10 @@ import * as pdfjsLib from "pdfjs-dist";
 import { createWorker } from "tesseract.js";
 import { createClient } from "@supabase/supabase-js";
 
-// PDF.js worker
+// Configure PDF.js worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
 
-// Supabase
+// Supabase setup
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
@@ -14,18 +14,6 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 export default function App() {
   const [status, setStatus] = useState("");
   const [palletIds, setPalletIds] = useState([]);
-
-  // ---- IMAGE PREPROCESSING ----
-  function preprocessImageData(imageData) {
-    const { data, width, height } = imageData;
-    for (let i = 0; i < data.length; i += 4) {
-      // grayscale
-      const avg = (data[i] + data[i + 1] + data[i + 2]) / 3;
-      const val = avg > 150 ? 255 : 0; // threshold
-      data[i] = data[i + 1] = data[i + 2] = val;
-    }
-    return new ImageData(data, width, height);
-  }
 
   async function handleDrop(e) {
     e.preventDefault();
@@ -51,30 +39,27 @@ export default function App() {
     const arrayBuffer = await file.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
 
-    // Worker with digits language
-    const worker = await createWorker("eng", 1, { logger: null });
+    // Create OCR worker without deprecated calls
+    const worker = await createWorker({ logger: null });
 
     const ids = new Set();
     for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+      setStatus(`Processing page ${pageNum} of ${pdf.numPages}...`);
+
       const page = await pdf.getPage(pageNum);
-      const viewport = page.getViewport({ scale: 3.0 }); // High scale
+      const viewport = page.getViewport({ scale: 2.0 });
       const canvas = document.createElement("canvas");
       const context = canvas.getContext("2d");
       canvas.height = viewport.height;
       canvas.width = viewport.width;
       await page.render({ canvasContext: context, viewport }).promise;
 
-      // Preprocess
-      const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
-      const processedData = preprocessImageData(imageData);
-      context.putImageData(processedData, 0, 0);
-
-      // OCR
+      // Run OCR on page image, restricting to digits
       const { data: { text } } = await worker.recognize(canvas, {
+        lang: "eng",
         tessedit_char_whitelist: "0123456789",
       });
 
-      // Find exactly 18-digit sequences
       const found = text.match(/\b\d{18}\b/g);
       if (found) found.forEach(id => ids.add(id));
     }
@@ -104,7 +89,7 @@ export default function App() {
           padding: "40px",
           width: "300px",
           margin: "20px auto",
-          cursor: "pointer"
+          cursor: "pointer",
         }}
       >
         Drop PDF here
