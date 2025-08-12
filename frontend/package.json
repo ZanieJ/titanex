@@ -1,5 +1,5 @@
 {
-  "name": "pallet-id-extractor",
+  "name": "titanex-pallet-id-extractor-frontend",
   "version": "1.0.0",
   "private": true,
   "scripts": {
@@ -9,8 +9,7 @@
   },
   "dependencies": {
     "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "react-dropzone": "^14.2.3"
+    "react-dom": "^18.2.0"
   },
   "devDependencies": {
     "vite": "^4.0.0",
