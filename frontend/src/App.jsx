@@ -1,11 +1,12 @@
 import React, { useCallback, useState } from "react";
 import { useDropzone } from "react-dropzone";
-import { createClient } from "@supabase/supabase-js";
 
-// ✅ Use CDN-based imports for Netlify build safety
+// Load libraries from CDN to avoid npm installs
 import "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.4.120/build/pdf.min.js";
 import "https://cdn.jsdelivr.net/npm/tesseract.js@5.0.3/dist/tesseract.min.js";
+import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.39.7/+esm";
 
+// Supabase client from CDN
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
   import.meta.env.VITE_SUPABASE_ANON_KEY
@@ -19,7 +20,6 @@ export default function App() {
     setStatus("Processing file...");
     try {
       const fileType = file.type;
-
       let text = "";
 
       if (fileType === "application/pdf") {
@@ -34,9 +34,16 @@ export default function App() {
       setPalletIds(ids);
 
       if (ids.length > 0) {
-        await supabase.from("pallet_ids").insert(
-          ids.map((id) => ({ pallet_id: id }))
+        const fileName = file.name;
+
+        await supabase.from("NDAs").insert(
+          ids.map((id, idx) => ({
+            pallet_id: id,
+            document_name: fileName,
+            page_number: idx + 1,
+          }))
         );
+
         setStatus("Upload complete and saved to Supabase!");
       } else {
         setStatus("No pallet IDs found.");
