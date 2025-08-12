@@ -1,72 +1,57 @@
-import React, { useEffect, useState } from 'react';
-import Dropzone from 'react-dropzone';
+import React, { useState } from "react";
 
 export default function App() {
-  const [pdfjsLib, setPdfjsLib] = useState(null);
-  const [textContent, setTextContent] = useState('');
+  const [text, setText] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  // Load pdf.js and configure worker
-  useEffect(() => {
-    if (window.pdfjsLib) {
-      window.pdfjsLib.GlobalWorkerOptions.workerSrc =
-        'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-      setPdfjsLib(window.pdfjsLib);
-    }
-  }, []);
+  const handleFileChange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
 
-  // Extract text from first page of uploaded PDF
-  const handlePDF = async (file) => {
-    if (!pdfjsLib) {
-      alert('PDF.js not loaded yet.');
-      return;
-    }
+    setLoading(true);
+    setText("");
 
-    const fileReader = new FileReader();
-    fileReader.onload = async () => {
-      const typedArray = new Uint8Array(fileReader.result);
-      const pdf = await pdfjsLib.getDocument(typedArray).promise;
-      const page = await pdf.getPage(1);
-      const text = await page.getTextContent();
-      const extractedText = text.items.map((item) => item.str).join(' ');
-      setTextContent(extractedText);
+    const reader = new FileReader();
+    reader.onload = async function () {
+      try {
+        // Using the pdfjsLib from CDN (already loaded globally)
+        const pdf = await window.pdfjsLib.getDocument({ data: reader.result }).promise;
+        let fullText = "";
+
+        for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+          const page = await pdf.getPage(pageNum);
+          const content = await page.getTextContent();
+          const strings = content.items.map((item) => item.str);
+          fullText += strings.join(" ") + "\n";
+        }
+
+        setText(fullText);
+      } catch (err) {
+        console.error("Error reading PDF:", err);
+        setText("Failed to read PDF.");
+      } finally {
+        setLoading(false);
+      }
     };
-    fileReader.readAsArrayBuffer(file);
+
+    reader.readAsArrayBuffer(file);
   };
 
   return (
-    <div style={{ padding: '20px', fontFamily: 'Arial' }}>
-      <h1>Pallet ID Extractor</h1>
-
-      <Dropzone
-        accept={{ 'application/pdf': [] }}
-        onDrop={(acceptedFiles) => {
-          if (acceptedFiles.length > 0) {
-            handlePDF(acceptedFiles[0]);
-          }
+    <div style={{ padding: 20 }}>
+      <h1>PDF Text Extractor</h1>
+      <input type="file" accept="application/pdf" onChange={handleFileChange} />
+      {loading && <p>Loading...</p>}
+      <pre
+        style={{
+          whiteSpace: "pre-wrap",
+          background: "#f4f4f4",
+          padding: "10px",
+          marginTop: "20px",
         }}
       >
-        {({ getRootProps, getInputProps }) => (
-          <div
-            {...getRootProps()}
-            style={{
-              border: '2px dashed #666',
-              padding: '20px',
-              borderRadius: '8px',
-              cursor: 'pointer',
-            }}
-          >
-            <input {...getInputProps()} />
-            <p>Drop PDF here or click to upload</p>
-          </div>
-        )}
-      </Dropzone>
-
-      {textContent && (
-        <div style={{ marginTop: '20px' }}>
-          <h3>Extracted Text:</h3>
-          <pre style={{ background: '#f0f0f0', padding: '10px' }}>{textContent}</pre>
-        </div>
-      )}
+        {text}
+      </pre>
     </div>
   );
 }
