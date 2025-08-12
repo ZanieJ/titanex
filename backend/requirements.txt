@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+pdf2image
+opencv-python
+easyocr
+paddleocr
+python-multipart
+supabase
+python-dotenv
