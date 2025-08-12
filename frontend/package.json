@@ -1,5 +1,5 @@
 {
-  "name": "titanex-pallet-id-extractor-frontend",
+  "name": "pallet-id-extractor",
   "version": "1.0.0",
   "private": true,
   "scripts": {
