@@ -10,8 +10,7 @@
   "dependencies": {
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "react-dropzone": "^14.2.3",
-    "pdfjs-dist": "^4.0.379" 
+    "react-dropzone": "^14.2.3"
   },
   "devDependencies": {
     "vite": "^4.0.0",
