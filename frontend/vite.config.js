@@ -5,7 +5,7 @@ export default defineConfig({
   plugins: [react()],
   build: {
     rollupOptions: {
-      external: ["tesseract.js"]
+      external: ["tesseract.js", "pdfjs-dist"]
     }
   }
 });
