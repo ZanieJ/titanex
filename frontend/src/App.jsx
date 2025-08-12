@@ -1,153 +1,131 @@
 import React, { useCallback, useState } from "react";
 import { useDropzone } from "react-dropzone";
-const { createWorker } = await import("tesseract.js");
-import * as pdfjsLib from "pdfjs-dist";
 import { createClient } from "@supabase/supabase-js";
 
-import pdfWorker from "pdfjs-dist/build/pdf.worker?worker";
+// ✅ Use CDN-based imports for Netlify build safety
+import "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.4.120/build/pdf.min.js";
+import "https://cdn.jsdelivr.net/npm/tesseract.js@5.0.3/dist/tesseract.min.js";
 
-pdfjsLib.GlobalWorkerOptions.workerPort = new pdfWorker();
-
-// ✅ Use environment variables from Netlify
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
   import.meta.env.VITE_SUPABASE_ANON_KEY
 );
 
-const App = () => {
-  const [results, setResults] = useState([]);
-  const [processing, setProcessing] = useState(false);
-  const [error, setError] = useState(null);
+export default function App() {
+  const [status, setStatus] = useState("");
+  const [palletIds, setPalletIds] = useState([]);
 
-  const extractPalletIds = (text) => {
-    const regex = /\b\d{18}\b/g;
-    return [...text.matchAll(regex)].map((match) => match[0]);
+  const processFile = async (file) => {
+    setStatus("Processing file...");
+    try {
+      const fileType = file.type;
+
+      let text = "";
+
+      if (fileType === "application/pdf") {
+        text = await processPDF(file);
+      } else if (fileType.startsWith("image/")) {
+        text = await runOCR(file);
+      } else {
+        throw new Error("Unsupported file type");
+      }
+
+      const ids = extractPalletIds(text);
+      setPalletIds(ids);
+
+      if (ids.length > 0) {
+        await supabase.from("pallet_ids").insert(
+          ids.map((id) => ({ pallet_id: id }))
+        );
+        setStatus("Upload complete and saved to Supabase!");
+      } else {
+        setStatus("No pallet IDs found.");
+      }
+    } catch (error) {
+      console.error(error);
+      setStatus(`Error: ${error.message}`);
+    }
   };
 
-  const onDrop = useCallback(async (acceptedFiles) => {
-    setProcessing(true);
-    setError(null);
-    let finalResults = [];
+  const processPDF = async (file) => {
+    setStatus("Extracting text from PDF...");
+    const arrayBuffer = await file.arrayBuffer();
+    const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    let text = "";
 
-    for (const file of acceptedFiles) {
-      try {
-        const arrayBuffer = await file.arrayBuffer();
-        const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const viewport = page.getViewport({ scale: 2.0 });
+      const canvas = document.createElement("canvas");
+      const context = canvas.getContext("2d");
+      canvas.height = viewport.height;
+      canvas.width = viewport.width;
 
-        for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-          const page = await pdf.getPage(pageNum);
-          const viewport = page.getViewport({ scale: 2.0 });
-          const canvas = document.createElement("canvas");
-          const context = canvas.getContext("2d");
-          canvas.height = viewport.height;
-          canvas.width = viewport.width;
-          await page.render({ canvasContext: context, viewport }).promise;
+      await page.render({ canvasContext: context, viewport }).promise;
 
-          const worker = await createWorker("eng");
-          const {
-            data: { text },
-          } = await worker.recognize(canvas);
-          await worker.terminate();
-
-          const ids = extractPalletIds(text);
-          ids.forEach((id) => {
-            finalResults.push({
-              pallet_id: id,
-              document_name: file.name,
-              page_number: pageNum,
-            });
-          });
-        }
-      } catch (err) {
-        console.error("PDF Processing Error:", err);
-        setError(`Failed processing PDF ${file.name}: ${err.message}`);
-      }
+      const imgBlob = await new Promise((resolve) =>
+        canvas.toBlob(resolve, "image/png")
+      );
+      const ocrResult = await runOCR(imgBlob);
+      text += ocrResult + "\n";
     }
+    return text;
+  };
 
-    setResults(finalResults);
-    setProcessing(false);
+  const runOCR = async (file) => {
+    setStatus("Running OCR...");
+    const { data } = await window.Tesseract.recognize(file, "eng", {
+      logger: (m) => console.log(m),
+    });
+    return data.text;
+  };
+
+  const extractPalletIds = (text) => {
+    const regex = /\b[A-Z0-9]{8,}\b/g;
+    return text.match(regex) || [];
+  };
+
+  const onDrop = useCallback((acceptedFiles) => {
+    if (acceptedFiles.length > 0) {
+      processFile(acceptedFiles[0]);
+    }
   }, []);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
-    accept: { "application/pdf": [] },
+    accept: {
+      "application/pdf": [".pdf"],
+      "image/*": [".png", ".jpg", ".jpeg"],
+    },
   });
 
-  const uploadToSupabase = async () => {
-    if (results.length === 0) {
-      alert("No results to upload");
-      return;
-    }
-
-    try {
-      const { error } = await supabase.from("NDAs").insert(results);
-      if (error) {
-        console.error("Supabase Upload Error:", error);
-        alert("Upload failed: " + error.message);
-      } else {
-        alert("Upload successful!");
-      }
-    } catch (err) {
-      console.error("Supabase Connection Error:", err);
-      alert("Could not connect to Supabase: " + err.message);
-    }
-  };
-
   return (
-    <div className="p-4 max-w-4xl mx-auto">
-      <h1 className="text-3xl font-bold mb-6">Melissa OCR Pallet ID Extractor</h1>
-
+    <div className="p-8">
+      <h1 className="text-2xl font-bold mb-4">Pallet ID Extractor</h1>
       <div
         {...getRootProps()}
-        className={`border-4 border-dashed rounded-xl p-10 text-center transition ${
-          isDragActive
-            ? "border-blue-500 bg-blue-50"
-            : "border-gray-300"
+        className={`p-6 border-2 border-dashed rounded-lg text-center ${
+          isDragActive ? "bg-blue-50" : ""
         }`}
       >
         <input {...getInputProps()} />
         {isDragActive ? (
-          <p className="text-blue-500">Drop the PDFs here...</p>
+          <p>Drop the file here...</p>
         ) : (
-          <p className="text-gray-600">Drag & drop PDF files here</p>
+          <p>Drag & drop a PDF or image, or click to select</p>
         )}
       </div>
-
-      {processing && (
-        <p className="mt-4 text-yellow-600">Processing PDFs...</p>
-      )}
-      {error && <p className="mt-4 text-red-600">{error}</p>}
-
-      {results.length > 0 && (
-        <>
-          <table className="table-auto w-full border mt-6 text-sm">
-            <thead className="bg-gray-100">
-              <tr>
-                <th className="border px-2 py-1">Pallet ID</th>
-                <th className="border px-2 py-1">Document</th>
-                <th className="border px-2 py-1">Page</th>
-              </tr>
-            </thead>
-            <tbody>
-              {results.map((r, i) => (
-                <tr key={i}>
-                  <td className="border px-2 py-1">{r.pallet_id}</td>
-                  <td className="border px-2 py-1">{r.document_name}</td>
-                  <td className="border px-2 py-1">{r.page_number}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <button
-            onClick={uploadToSupabase}
-            className="mt-4 bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700"
-          >
-            Upload to Supabase
-          </button>
-        </>
+      <p className="mt-4">{status}</p>
+      {palletIds.length > 0 && (
+        <div className="mt-4">
+          <h2 className="font-bold">Extracted Pallet IDs:</h2>
+          <ul className="list-disc list-inside">
+            {palletIds.map((id, idx) => (
+              <li key={idx}>{id}</li>
+            ))}
+          </ul>
+        </div>
       )}
     </div>
   );
-};
-
-export default App;
+}
