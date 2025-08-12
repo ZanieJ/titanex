@@ -1,21 +1,21 @@
 import React, { useCallback, useState } from "react";
 import { useDropzone } from "react-dropzone";
 
-// Load PDF.js from CDN
-import * as pdfjsLib from "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.4.120/build/pdf.min.mjs";
+// ✅ Correct PDF.js ESM build + worker
+import * as pdfjsLib from "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.min.mjs";
 pdfjsLib.GlobalWorkerOptions.workerSrc =
-  "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.4.120/build/pdf.worker.min.js";
+  "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.worker.min.mjs";
 
-// Tesseract.js from CDN (dynamic import so it only loads when needed)
+// ✅ Load Tesseract from ESM CDN when needed
 const loadTesseract = async () => {
   const { createWorker } = await import(
-    "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"
+    "https://cdn.jsdelivr.net/npm/tesseract.js@5.0.5/dist/tesseract.esm.min.js"
   );
   return createWorker;
 };
 
-// Supabase from CDN
-import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm";
+// ✅ Supabase from ESM CDN
+import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.43.4/+esm";
 
 // Init Supabase
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
@@ -60,7 +60,7 @@ export default function App() {
 
           // Insert into Supabase
           await supabase.from("NDAs").insert({
-            pallet_id: "some-pallet-id", // Replace with actual
+            pallet_id: "some-pallet-id", // replace if needed
             document_name: file.name,
             page_number: pageNum,
           });
