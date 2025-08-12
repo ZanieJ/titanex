@@ -1,116 +1,102 @@
-// src/App.jsx
 import React, { useCallback, useState } from "react";
 import { useDropzone } from "react-dropzone";
-import * as pdfjsLib from "pdfjs-dist/build/pdf";
-import pdfWorker from "pdfjs-dist/build/pdf.worker.min.mjs?worker";
+import { createWorker } from "tesseract.js";
+import * as pdfjsLib from "pdfjs-dist/build/pdf.js";
+import pdfWorker from "pdfjs-dist/build/pdf.worker.min.js?worker";
 import { createClient } from "@supabase/supabase-js";
-import Tesseract from "tesseract.js";
 
-// Configure PDF.js worker
+// Tell pdf.js where its worker is
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
-// Supabase connection from env vars
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-if (!supabaseUrl || !supabaseKey) {
-  throw new Error("Supabase URL and Key must be set in environment variables");
-}
+// ✅ Your Supabase credentials
+const supabaseUrl = "https://cassouhzovotgdhzsssqg.supabase.co";
+const supabaseKey =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNhc3NvdWh6b3ZvdGdkaHpzc3FnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDkxMTg5MjYsImV4cCI6MjA2NDY5NDkyNn0.dNg51Yn9aplsyAP9kvsEQOTHWb64edsAk5OqiynEZlk";
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 export default function App() {
-  const [status, setStatus] = useState("");
-  const [error, setError] = useState("");
-  const [uploads, setUploads] = useState([]);
+  const [extractedText, setExtractedText] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  const onDrop = useCallback(async (acceptedFiles) => {
-    setError("");
-    setUploads([]);
-    for (const file of acceptedFiles) {
-      try {
-        setStatus(`Reading PDF: ${file.name}`);
-        const arrayBuffer = await file.arrayBuffer();
-        const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const processFile = async (file) => {
+    setLoading(true);
+    try {
+      let text = "";
 
-        for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-          setStatus(`Processing page ${pageNum} of ${file.name}`);
-          const page = await pdf.getPage(pageNum);
-          const viewport = page.getViewport({ scale: 2 });
-          const canvas = document.createElement("canvas");
-          const context = canvas.getContext("2d");
-          canvas.height = viewport.height;
-          canvas.width = viewport.width;
-          await page.render({ canvasContext: context, viewport }).promise;
+      if (file.type === "application/pdf") {
+        const fileReader = new FileReader();
+        fileReader.onload = async () => {
+          const typedarray = new Uint8Array(fileReader.result);
+          const pdf = await pdfjsLib.getDocument({ data: typedarray }).promise;
+          let fullText = "";
 
-          // Run OCR on page image
-          const { data: { text } } = await Tesseract.recognize(canvas, "eng");
-          
-          // Extract pallet_id (customize this regex if needed)
-          const palletIdMatch = text.match(/Pallet\s*ID\s*[:\-]?\s*(\S+)/i);
-          const pallet_id = palletIdMatch ? palletIdMatch[1] : "UNKNOWN";
+          for (let i = 1; i <= pdf.numPages; i++) {
+            const page = await pdf.getPage(i);
+            const textContent = await page.getTextContent();
+            const pageText = textContent.items.map((item) => item.str).join(" ");
+            fullText += pageText + "\n";
+          }
 
-          // Insert into Supabase NDAs table
-          const { error: insertError } = await supabase
-            .from("NDAs")
-            .insert([
-              {
-                pallet_id,
-                document_name: file.name,
-                page_number: pageNum,
-              },
-            ]);
-
-          if (insertError) throw insertError;
-
-          setUploads((prev) => [
-            ...prev,
-            { file: file.name, page: pageNum, pallet_id }
-          ]);
-        }
-      } catch (err) {
-        console.error(err);
-        setError(`Failed to process ${file.name}: ${err.message}`);
+          setExtractedText(fullText);
+          setLoading(false);
+        };
+        fileReader.readAsArrayBuffer(file);
+      } else if (file.type.startsWith("image/")) {
+        const worker = await createWorker("eng");
+        const {
+          data: { text: ocrText },
+        } = await worker.recognize(file);
+        await worker.terminate();
+        text = ocrText;
+        setExtractedText(text);
+        setLoading(false);
       }
+
+      // Upload file to Supabase
+      const { error } = await supabase.storage
+        .from("uploads")
+        .upload(`${Date.now()}_${file.name}`, file);
+
+      if (error) {
+        console.error("Upload error:", error.message);
+      }
+    } catch (err) {
+      console.error(err);
+      setLoading(false);
     }
-    setStatus("All files processed.");
+  };
+
+  const onDrop = useCallback((acceptedFiles) => {
+    if (acceptedFiles.length > 0) {
+      processFile(acceptedFiles[0]);
+    }
   }, []);
 
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({
-    onDrop,
-    accept: { "application/pdf": [".pdf"] }
-  });
+  const { getRootProps, getInputProps } = useDropzone({ onDrop });
 
   return (
-    <div style={{ fontFamily: "sans-serif", padding: 20 }}>
-      <h1>PDF OCR & Supabase Upload</h1>
+    <div style={{ padding: "20px" }}>
+      <h1>File Text Extractor</h1>
       <div
         {...getRootProps()}
         style={{
-          border: "2px dashed #aaa",
-          padding: 20,
+          border: "2px dashed #ccc",
+          padding: "20px",
           textAlign: "center",
-          background: isDragActive ? "#f0f8ff" : "white"
         }}
       >
         <input {...getInputProps()} />
-        {isDragActive
-          ? <p>Drop the PDF files here...</p>
-          : <p>Drag & drop PDF files, or click to select</p>}
+        <p>Drag & drop a PDF or image, or click to select</p>
       </div>
-
-      {status && <p><strong>Status:</strong> {status}</p>}
-      {error && <p style={{ color: "red" }}>{error}</p>}
-
-      {uploads.length > 0 && (
-        <div style={{ marginTop: 20 }}>
-          <h2>Uploaded Pages</h2>
-          <ul>
-            {uploads.map((u, idx) => (
-              <li key={idx}>
-                {u.file} — Page {u.page} — Pallet ID: {u.pallet_id}
-              </li>
-            ))}
-          </ul>
-        </div>
+      {loading ? (
+        <p>Processing...</p>
+      ) : (
+        extractedText && (
+          <div>
+            <h2>Extracted Text:</h2>
+            <pre>{extractedText}</pre>
+          </div>
+        )
       )}
     </div>
   );
