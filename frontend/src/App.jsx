@@ -1,8 +1,8 @@
 // src/App.jsx
 import React, { useCallback, useState } from "react";
 import { useDropzone } from "react-dropzone";
-import * as pdfjsLib from "pdfjs-dist";
-import pdfWorker from "pdfjs-dist/build/pdf.worker.min.js?worker";
+import * as pdfjsLib from "pdfjs-dist/build/pdf";
+import pdfWorker from "pdfjs-dist/build/pdf.worker.min.mjs?worker";
 import { createClient } from "@supabase/supabase-js";
 import Tesseract from "tesseract.js";
 
