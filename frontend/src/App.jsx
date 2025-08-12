@@ -1,103 +1,85 @@
 import React, { useCallback, useState } from "react";
-import { useDropzone } from "react-dropzone";
-import { createWorker } from "tesseract.js";
-import * as pdfjsLib from "pdfjs-dist/build/pdf.js";
-import pdfWorker from "pdfjs-dist/build/pdf.worker.min.js?worker";
 import { createClient } from "@supabase/supabase-js";
+import { useDropzone } from "react-dropzone";
 
-// Tell pdf.js where its worker is
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
+// Supabase config
+const SUPABASE_URL = "https://YOUR_PROJECT_ID.supabase.co";
+const SUPABASE_KEY = "YOUR_ANON_KEY";
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-// ✅ Your Supabase credentials
-const supabaseUrl = "https://cassouhzovotgdhzsssqg.supabase.co";
-const supabaseKey =
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNhc3NvdWh6b3ZvdGdkaHpzc3FnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDkxMTg5MjYsImV4cCI6MjA2NDY5NDkyNn0.dNg51Yn9aplsyAP9kvsEQOTHWb64edsAk5OqiynEZlk";
-const supabase = createClient(supabaseUrl, supabaseKey);
-
-export default function App() {
-  const [extractedText, setExtractedText] = useState("");
+function App() {
+  const [text, setText] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const processFile = async (file) => {
+  const onDrop = useCallback(async (acceptedFiles) => {
     setLoading(true);
-    try {
-      let text = "";
+    const file = acceptedFiles[0];
 
-      if (file.type === "application/pdf") {
-        const fileReader = new FileReader();
-        fileReader.onload = async () => {
-          const typedarray = new Uint8Array(fileReader.result);
-          const pdf = await pdfjsLib.getDocument({ data: typedarray }).promise;
-          let fullText = "";
+    // Upload to Supabase storage
+    const { data: uploadData, error: uploadError } = await supabase.storage
+      .from("pdfs")
+      .upload(`uploads/${file.name}`, file, { upsert: true });
 
-          for (let i = 1; i <= pdf.numPages; i++) {
-            const page = await pdf.getPage(i);
-            const textContent = await page.getTextContent();
-            const pageText = textContent.items.map((item) => item.str).join(" ");
-            fullText += pageText + "\n";
-          }
-
-          setExtractedText(fullText);
-          setLoading(false);
-        };
-        fileReader.readAsArrayBuffer(file);
-      } else if (file.type.startsWith("image/")) {
-        const worker = await createWorker("eng");
-        const {
-          data: { text: ocrText },
-        } = await worker.recognize(file);
-        await worker.terminate();
-        text = ocrText;
-        setExtractedText(text);
-        setLoading(false);
-      }
-
-      // Upload file to Supabase
-      const { error } = await supabase.storage
-        .from("uploads")
-        .upload(`${Date.now()}_${file.name}`, file);
-
-      if (error) {
-        console.error("Upload error:", error.message);
-      }
-    } catch (err) {
-      console.error(err);
+    if (uploadError) {
+      console.error(uploadError);
       setLoading(false);
+      return;
     }
-  };
 
-  const onDrop = useCallback((acceptedFiles) => {
-    if (acceptedFiles.length > 0) {
-      processFile(acceptedFiles[0]);
-    }
+    console.log("Uploaded to Supabase:", uploadData);
+
+    // Process PDF in browser with pdf.js (from CDN)
+    const pdfjsLib = await import(
+      "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.min.js"
+    );
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.worker.min.js";
+
+    const fileReader = new FileReader();
+    fileReader.onload = async function () {
+      const typedArray = new Uint8Array(this.result);
+      const pdf = await pdfjsLib.getDocument({ data: typedArray }).promise;
+
+      let extractedText = "";
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const textContent = await page.getTextContent();
+        extractedText += textContent.items.map((item) => item.str).join(" ") + "\n";
+      }
+      setText(extractedText);
+    };
+    fileReader.readAsArrayBuffer(file);
+
+    setLoading(false);
   }, []);
 
-  const { getRootProps, getInputProps } = useDropzone({ onDrop });
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({ onDrop });
 
   return (
-    <div style={{ padding: "20px" }}>
-      <h1>File Text Extractor</h1>
+    <div style={{ padding: "2rem", fontFamily: "Arial" }}>
+      <h1>Pallet ID Extractor</h1>
       <div
         {...getRootProps()}
         style={{
-          border: "2px dashed #ccc",
-          padding: "20px",
+          border: "2px dashed gray",
+          padding: "2rem",
           textAlign: "center",
+          background: isDragActive ? "#eee" : "#fafafa",
+          cursor: "pointer"
         }}
       >
         <input {...getInputProps()} />
-        <p>Drag & drop a PDF or image, or click to select</p>
+        {isDragActive ? <p>Drop the PDF here ...</p> : <p>Drag & drop a PDF, or click to select</p>}
       </div>
-      {loading ? (
-        <p>Processing...</p>
-      ) : (
-        extractedText && (
-          <div>
-            <h2>Extracted Text:</h2>
-            <pre>{extractedText}</pre>
-          </div>
-        )
+      {loading && <p>Processing...</p>}
+      {text && (
+        <div style={{ marginTop: "2rem" }}>
+          <h2>Extracted Text</h2>
+          <pre>{text}</pre>
+        </div>
       )}
     </div>
   );
 }
+
+export default App;
