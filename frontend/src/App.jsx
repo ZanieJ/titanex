@@ -1,35 +1,66 @@
 import React, { useCallback, useState } from "react";
 import { useDropzone } from "react-dropzone";
+import { createWorker } from "tesseract.js";
+import * as pdfjsLib from "pdfjs-dist";
+import { createClient } from "@supabase/supabase-js";
+
+import pdfWorker from "pdfjs-dist/build/pdf.worker?worker";
+
+pdfjsLib.GlobalWorkerOptions.workerPort = new pdfWorker();
+
+// ✅ Use environment variables from Netlify
+const supabase = createClient(
+  import.meta.env.VITE_SUPABASE_URL,
+  import.meta.env.VITE_SUPABASE_ANON_KEY
+);
 
 const App = () => {
   const [results, setResults] = useState([]);
   const [processing, setProcessing] = useState(false);
+  const [error, setError] = useState(null);
 
   const extractPalletIds = (text) => {
-    const regex = /\b\d{14,18}\b/g;
-    const matches = text.match(regex) || [];
-    return matches;
+    const regex = /\b\d{18}\b/g;
+    return [...text.matchAll(regex)].map((match) => match[0]);
   };
 
   const onDrop = useCallback(async (acceptedFiles) => {
     setProcessing(true);
+    setError(null);
     let finalResults = [];
 
     for (const file of acceptedFiles) {
       try {
-        const formData = new FormData();
-        formData.append("file", file);
+        const arrayBuffer = await file.arrayBuffer();
+        const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
 
-        const res = await fetch("http://localhost:8000/extract", {
-          method: "POST",
-          body: formData,
-        });
+        for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+          const page = await pdf.getPage(pageNum);
+          const viewport = page.getViewport({ scale: 2.0 });
+          const canvas = document.createElement("canvas");
+          const context = canvas.getContext("2d");
+          canvas.height = viewport.height;
+          canvas.width = viewport.width;
+          await page.render({ canvasContext: context, viewport }).promise;
 
-        const data = await res.json();
-        finalResults = [...finalResults, ...data.results];
+          const worker = await createWorker("eng");
+          const {
+            data: { text },
+          } = await worker.recognize(canvas);
+          await worker.terminate();
+
+          const ids = extractPalletIds(text);
+          ids.forEach((id) => {
+            finalResults.push({
+              pallet_id: id,
+              document_name: file.name,
+              page_number: pageNum,
+            });
+          });
+        }
       } catch (err) {
-        alert("Failed processing PDF: " + err.message);
-        console.error(err);
+        console.error("PDF Processing Error:", err);
+        setError(`Failed processing PDF ${file.name}: ${err.message}`);
       }
     }
 
@@ -37,11 +68,29 @@ const App = () => {
     setProcessing(false);
   }, []);
 
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({ onDrop, accept: { "application/pdf": [] } });
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+    onDrop,
+    accept: { "application/pdf": [] },
+  });
 
   const uploadToSupabase = async () => {
-    // Backend already inserts to Supabase if configured, but keeping a client-side hook if desired.
-    alert("Upload to Supabase is handled server-side after extraction.")
+    if (results.length === 0) {
+      alert("No results to upload");
+      return;
+    }
+
+    try {
+      const { error } = await supabase.from("NDAs").insert(results);
+      if (error) {
+        console.error("Supabase Upload Error:", error);
+        alert("Upload failed: " + error.message);
+      } else {
+        alert("Upload successful!");
+      }
+    } catch (err) {
+      console.error("Supabase Connection Error:", err);
+      alert("Could not connect to Supabase: " + err.message);
+    }
   };
 
   return (
@@ -50,7 +99,11 @@ const App = () => {
 
       <div
         {...getRootProps()}
-        className={`border-4 border-dashed rounded-xl p-10 text-center transition ${isDragActive ? "border-blue-500 bg-blue-50" : "border-gray-300"}`}
+        className={`border-4 border-dashed rounded-xl p-10 text-center transition ${
+          isDragActive
+            ? "border-blue-500 bg-blue-50"
+            : "border-gray-300"
+        }`}
       >
         <input {...getInputProps()} />
         {isDragActive ? (
@@ -60,7 +113,10 @@ const App = () => {
         )}
       </div>
 
-      {processing && <p className="mt-4 text-yellow-600">Processing PDFs...</p>}
+      {processing && (
+        <p className="mt-4 text-yellow-600">Processing PDFs...</p>
+      )}
+      {error && <p className="mt-4 text-red-600">{error}</p>}
 
       {results.length > 0 && (
         <>
