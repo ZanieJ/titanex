@@ -17,9 +17,8 @@ const App = () => {
   const [results, setResults] = useState([]);
   const [processing, setProcessing] = useState(false);
 
-  // === Pallet ID Extraction (Exactly 18 digits) ===
+  // Extract exactly 18-digit pallet IDs
   const extractPalletIds = (text) => {
-    // Match exactly 18-digit numbers
     const regex = /\b\d{18}\b/g;
     return [...text.matchAll(regex)].map((match) => match[0]);
   };
@@ -32,7 +31,6 @@ const App = () => {
 
     for (const file of acceptedFiles) {
       if (file.type === "application/pdf") {
-        // Process PDF using pdf.js
         const pdf = await pdfjsLib.getDocument(URL.createObjectURL(file)).promise;
         for (let i = 0; i < pdf.numPages; i++) {
           const page = await pdf.getPage(i + 1);
@@ -44,14 +42,12 @@ const App = () => {
 
           await page.render({ canvasContext: context, viewport }).promise;
 
-          // OCR this page
           const {
             data: { text },
           } = await worker.recognize(canvas);
           allPalletIds.push(...extractPalletIds(text));
         }
       } else if (file.type.startsWith("image/")) {
-        // OCR image files
         const {
           data: { text },
         } = await worker.recognize(file);
@@ -61,13 +57,11 @@ const App = () => {
 
     await worker.terminate();
 
-    // Remove duplicates
     allPalletIds = [...new Set(allPalletIds)];
 
     setResults(allPalletIds);
     setProcessing(false);
 
-    // Save results to Supabase
     if (allPalletIds.length > 0) {
       await supabase.from("pallet_ids").insert(
         allPalletIds.map((id) => ({ pallet_id: id }))
