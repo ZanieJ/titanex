@@ -17,9 +17,19 @@ const App = () => {
   const [results, setResults] = useState([]);
   const [processing, setProcessing] = useState(false);
 
+  // Strict 18‑digit extractor (de-duped)
   const extractPalletIds = (text) => {
     const regex = /\b\d{18}\b/g;
-    return [...text.matchAll(regex)].map((match) => match[0]);
+    const matches = text ? [...text.matchAll(regex)].map((m) => m[0]) : [];
+    const seen = new Set();
+    const unique = [];
+    for (const id of matches) {
+      if (!seen.has(id)) {
+        seen.add(id);
+        unique.push(id);
+      }
+    }
+    return unique;
   };
 
   const onDrop = useCallback(async (acceptedFiles) => {
@@ -33,60 +43,82 @@ const App = () => {
 
         for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
           const page = await pdf.getPage(pageNum);
-          const viewport = page.getViewport({ scale: 2.0 });
+          const viewport = page.getViewport({ scale: 2.3 }); // a bit sharper for OCR
           const canvas = document.createElement("canvas");
           const context = canvas.getContext("2d");
           canvas.height = viewport.height;
           canvas.width = viewport.width;
           await page.render({ canvasContext: context, viewport }).promise;
 
-          const worker = await createWorker("eng");
-          await worker.setParameters({
-            tessedit_char_whitelist: "0123456789",
-            classify_bln_numeric_mode: "1",
-            tessedit_pageseg_mode: "6",
-            user_defined_dpi: "300",
-            preserve_interword_spaces: "1",
-          });
-          
-          // Try OCR at 0, 90, 180, 270 degrees (handles sideways scans)
-          const angles = [0, 90, 180, 270];
+          // ---------- OCR (amended): proper init + digits-only + rotations ----------
           let combinedText = "";
-          
-          for (const angle of angles) {
-            // Build a rotated clone of the rendered page canvas
-            const rCanvas = document.createElement("canvas");
-            const rCtx = rCanvas.getContext("2d");
-          
-            // For 90/270 rotations, swap width/height
-            if (angle % 180 === 0) {
-              rCanvas.width = canvas.width;
-              rCanvas.height = canvas.height;
-            } else {
-              rCanvas.width = canvas.height;
-              rCanvas.height = canvas.width;
-            }
-          
-            rCtx.save();
-            rCtx.translate(rCanvas.width / 2, rCanvas.height / 2);
-            rCtx.rotate((angle * Math.PI) / 180);
-            rCtx.drawImage(
-              canvas,
-              -canvas.width / 2,
-              -canvas.height / 2,
-              canvas.width,
-              canvas.height
-            );
-            rCtx.restore();
-          
-            const { data: { text } } = await worker.recognize(rCanvas);
-            combinedText += "\n" + text;
-          }
-          
-          await worker.terminate();
-          
-          const ids = extractPalletIds(combinedText);
 
+          const worker = await createWorker({
+            logger: (m) => console.log("[tesseract]", m),
+            // Explicit paths avoid silent stalls on Netlify
+            workerPath: "https://unpkg.com/tesseract.js@5.0.4/dist/worker.min.js",
+            corePath: "https://unpkg.com/tesseract.js-core@5.0.2/tesseract-core.wasm.js",
+            langPath: "https://tessdata.projectnaptha.com/4.0.0",
+          });
+
+          try {
+            await worker.loadLanguage("eng");
+            await worker.initialize("eng");
+            await worker.setParameters({
+              tessedit_char_whitelist: "0123456789",
+              classify_bln_numeric_mode: "1",
+              tessedit_pageseg_mode: "6",
+              user_defined_dpi: "300",
+              preserve_interword_spaces: "1",
+            });
+
+            // Try OCR at 0, 90, 180, 270 (stop early if we find IDs)
+            const angles = [0, 90, 180, 270];
+            for (const angle of angles) {
+              const rCanvas = document.createElement("canvas");
+              const rCtx = rCanvas.getContext("2d");
+
+              if (angle % 180 === 0) {
+                rCanvas.width = canvas.width;
+                rCanvas.height = canvas.height;
+              } else {
+                rCanvas.width = canvas.height;
+                rCanvas.height = canvas.width;
+              }
+
+              rCtx.save();
+              rCtx.translate(rCanvas.width / 2, rCanvas.height / 2);
+              rCtx.rotate((angle * Math.PI) / 180);
+              rCtx.drawImage(
+                canvas,
+                -canvas.width / 2,
+                -canvas.height / 2,
+                canvas.width,
+                canvas.height
+              );
+              rCtx.restore();
+
+              console.log(`[ocr] page ${pageNum} at ${angle}°`);
+              const {
+                data: { text },
+              } = await worker.recognize(rCanvas);
+
+              combinedText += "\n" + text;
+
+              const earlyIds = extractPalletIds(combinedText);
+              if (earlyIds.length > 0) {
+                // Early exit once any 18‑digit IDs are present
+                break;
+              }
+            }
+          } catch (err) {
+            console.error("[ocr] failed:", err);
+          } finally {
+            await worker.terminate();
+          }
+          // ---------- END OCR ----------
+
+          const ids = extractPalletIds(combinedText);
           ids.forEach((id) => {
             finalResults.push({
               pallet_id: id,
@@ -105,7 +137,10 @@ const App = () => {
     setProcessing(false);
   }, []);
 
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({ onDrop, accept: { "application/pdf": [] } });
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+    onDrop,
+    accept: { "application/pdf": [] },
+  });
 
   const uploadToSupabase = async () => {
     const { error } = await supabase.from("NDAs").insert(results);
@@ -149,7 +184,7 @@ const App = () => {
             <tbody>
               {results.map((r, i) => (
                 <tr key={i}>
-                  <td className="border px-2 py-1">{r.pallet_id}</td>
+                  <td className="border px-2 py-1 font-mono">{r.pallet_id}</td>
                   <td className="border px-2 py-1">{r.document_name}</td>
                   <td className="border px-2 py-1">{r.page_number}</td>
                 </tr>
