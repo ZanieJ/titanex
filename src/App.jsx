@@ -1,11 +1,12 @@
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useRef, useState } from "react";
 import { useDropzone } from "react-dropzone";
-import { createWorker } from "tesseract.js";
 import * as pdfjsLib from "pdfjs-dist";
 import { createClient } from "@supabase/supabase-js";
+import * as ocr from "@paddlejs-models/ocr"; // <-- PaddleOCR (browser)
 
 import pdfWorker from "pdfjs-dist/build/pdf.worker?worker";
 
+// Wire up pdf.js worker (same as your project)
 pdfjsLib.GlobalWorkerOptions.workerPort = new pdfWorker();
 
 const supabase = createClient(
@@ -16,10 +17,21 @@ const supabase = createClient(
 const App = () => {
   const [results, setResults] = useState([]);
   const [processing, setProcessing] = useState(false);
+  const ocrReadyRef = useRef(false); // init PaddleOCR once
 
+  // Strict 18‑digit extractor (de‑duped)
   const extractPalletIds = (text) => {
     const regex = /\b\d{18}\b/g;
-    return [...(text?.matchAll(regex) || [])].map((m) => m[0]);
+    const matches = text ? [...text.matchAll(regex)].map((m) => m[0]) : [];
+    const seen = new Set();
+    const unique = [];
+    for (const id of matches) {
+      if (!seen.has(id)) {
+        seen.add(id);
+        unique.push(id);
+      }
+    }
+    return unique;
   };
 
   const onDrop = useCallback(async (acceptedFiles) => {
@@ -33,79 +45,59 @@ const App = () => {
 
         for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
           const page = await pdf.getPage(pageNum);
-          const viewport = page.getViewport({ scale: 2.3 }); // sharper OCR
+
+          // Render page to canvas (slightly higher scale for OCR clarity)
+          const viewport = page.getViewport({ scale: 2.3 });
           const canvas = document.createElement("canvas");
           const context = canvas.getContext("2d");
           canvas.height = viewport.height;
           canvas.width = viewport.width;
           await page.render({ canvasContext: context, viewport }).promise;
 
-          // ----- OCR (robust): proper init, digits-only, rotation; logger on recognize() -----
+          // ---- PaddleOCR: init once, then recognize with rotations ----
+          if (!ocrReadyRef.current) {
+            await ocr.init(); // downloads & warms up the model
+            ocrReadyRef.current = true;
+          }
+
+          const angles = [0, 90, 180, 270];
           let combinedText = "";
 
-          const worker = await createWorker({
-            // NOTE: do NOT pass `logger` here (causes DataCloneError in your build)
-            workerPath: "https://unpkg.com/tesseract.js@5.0.4/dist/worker.min.js",
-            corePath: "https://unpkg.com/tesseract.js-core@5.0.2/tesseract-core.wasm.js",
-            langPath: "https://tessdata.projectnaptha.com/4.0.0",
-          });
+          for (const angle of angles) {
+            // rotate canvas -> rCanvas
+            const rCanvas = document.createElement("canvas");
+            const rCtx = rCanvas.getContext("2d");
 
-          try {
-            await worker.loadLanguage("eng");
-            await worker.initialize("eng");
-            await worker.setParameters({
-              tessedit_char_whitelist: "0123456789",
-              classify_bln_numeric_mode: "1",
-              tessedit_pageseg_mode: "6",
-              user_defined_dpi: "300",
-              preserve_interword_spaces: "1",
-            });
-
-            const angles = [0, 90, 180, 270];
-            for (const angle of angles) {
-              // rotate the rendered page canvas
-              const rCanvas = document.createElement("canvas");
-              const rCtx = rCanvas.getContext("2d");
-
-              if (angle % 180 === 0) {
-                rCanvas.width = canvas.width;
-                rCanvas.height = canvas.height;
-              } else {
-                rCanvas.width = canvas.height;
-                rCanvas.height = canvas.width;
-              }
-
-              rCtx.save();
-              rCtx.translate(rCanvas.width / 2, rCanvas.height / 2);
-              rCtx.rotate((angle * Math.PI) / 180);
-              rCtx.drawImage(
-                canvas,
-                -canvas.width / 2,
-                -canvas.height / 2,
-                canvas.width,
-                canvas.height
-              );
-              rCtx.restore();
-
-              const {
-                data: { text },
-              } = await worker.recognize(
-                rCanvas,
-                { logger: (m) => console.log("[tesseract]", m) } // ✅ logger here, not in createWorker
-              );
-
-              combinedText += "\n" + text;
-
-              // optional early-exit if we already see any 18-digit IDs
-              if (extractPalletIds(combinedText).length > 0) break;
+            if (angle % 180 === 0) {
+              rCanvas.width = canvas.width;
+              rCanvas.height = canvas.height;
+            } else {
+              rCanvas.width = canvas.height;
+              rCanvas.height = canvas.width;
             }
-          } catch (err) {
-            console.error("[ocr] failed:", err);
-          } finally {
-            await worker.terminate();
-          }
-          // ----- END OCR -----
 
+            rCtx.save();
+            rCtx.translate(rCanvas.width / 2, rCanvas.height / 2);
+            rCtx.rotate((angle * Math.PI) / 180);
+            rCtx.drawImage(
+              canvas,
+              -canvas.width / 2,
+              -canvas.height / 2,
+              canvas.width,
+              canvas.height
+            );
+            rCtx.restore();
+
+            // Run PaddleOCR on the rotated page image
+            const { text } = await ocr.recognize(rCanvas);
+            combinedText += "\n" + (text || "");
+
+            // Early exit once we detect any 18‑digit number
+            if (/\b\d{18}\b/.test(combinedText)) break;
+          }
+          // ---- end PaddleOCR block ----
+
+          // Extract & record all 18‑digit IDs found on this page
           const ids = extractPalletIds(combinedText);
           ids.forEach((id) => {
             finalResults.push({
