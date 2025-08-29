@@ -40,18 +40,11 @@ const App = () => {
           canvas.width = viewport.width;
           await page.render({ canvasContext: context, viewport }).promise;
 
-          const worker = await createWorker({
-
-          await worker.loadLanguage("eng");
-          await worker.initialize("eng");
+          const worker = await createWorker("eng");
           await worker.setParameters({
-            // Restrict to digits only
             tessedit_char_whitelist: "0123456789",
-            // Helps with long numeric strings
             classify_bln_numeric_mode: "1",
-            // Good general PSM for uniform blocks
             tessedit_pageseg_mode: "6",
-            // Improves recognition on canvas renders
             user_defined_dpi: "300",
             preserve_interword_spaces: "1",
           });
