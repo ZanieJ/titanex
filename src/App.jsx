@@ -40,11 +40,60 @@ const App = () => {
           canvas.width = viewport.width;
           await page.render({ canvasContext: context, viewport }).promise;
 
-          const worker = await createWorker("eng");
-          const { data: { text } } = await worker.recognize(canvas);
-          await worker.terminate();
+          const worker = await createWorker({
 
-          const ids = extractPalletIds(text);
+          await worker.loadLanguage("eng");
+          await worker.initialize("eng");
+          await worker.setParameters({
+            // Restrict to digits only
+            tessedit_char_whitelist: "0123456789",
+            // Helps with long numeric strings
+            classify_bln_numeric_mode: "1",
+            // Good general PSM for uniform blocks
+            tessedit_pageseg_mode: "6",
+            // Improves recognition on canvas renders
+            user_defined_dpi: "300",
+            preserve_interword_spaces: "1",
+          });
+          
+          // Try OCR at 0, 90, 180, 270 degrees (handles sideways scans)
+          const angles = [0, 90, 180, 270];
+          let combinedText = "";
+          
+          for (const angle of angles) {
+            // Build a rotated clone of the rendered page canvas
+            const rCanvas = document.createElement("canvas");
+            const rCtx = rCanvas.getContext("2d");
+          
+            // For 90/270 rotations, swap width/height
+            if (angle % 180 === 0) {
+              rCanvas.width = canvas.width;
+              rCanvas.height = canvas.height;
+            } else {
+              rCanvas.width = canvas.height;
+              rCanvas.height = canvas.width;
+            }
+          
+            rCtx.save();
+            rCtx.translate(rCanvas.width / 2, rCanvas.height / 2);
+            rCtx.rotate((angle * Math.PI) / 180);
+            rCtx.drawImage(
+              canvas,
+              -canvas.width / 2,
+              -canvas.height / 2,
+              canvas.width,
+              canvas.height
+            );
+            rCtx.restore();
+          
+            const { data: { text } } = await worker.recognize(rCanvas);
+            combinedText += "\n" + text;
+          }
+          
+          await worker.terminate();
+          
+          const ids = extractPalletIds(combinedText);
+
           ids.forEach((id) => {
             finalResults.push({
               pallet_id: id,
