@@ -17,19 +17,9 @@ const App = () => {
   const [results, setResults] = useState([]);
   const [processing, setProcessing] = useState(false);
 
-  // Strict 18‑digit extractor (de-duped)
   const extractPalletIds = (text) => {
     const regex = /\b\d{18}\b/g;
-    const matches = text ? [...text.matchAll(regex)].map((m) => m[0]) : [];
-    const seen = new Set();
-    const unique = [];
-    for (const id of matches) {
-      if (!seen.has(id)) {
-        seen.add(id);
-        unique.push(id);
-      }
-    }
-    return unique;
+    return [...(text?.matchAll(regex) || [])].map((m) => m[0]);
   };
 
   const onDrop = useCallback(async (acceptedFiles) => {
@@ -43,19 +33,18 @@ const App = () => {
 
         for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
           const page = await pdf.getPage(pageNum);
-          const viewport = page.getViewport({ scale: 2.3 }); // a bit sharper for OCR
+          const viewport = page.getViewport({ scale: 2.3 }); // sharper OCR
           const canvas = document.createElement("canvas");
           const context = canvas.getContext("2d");
           canvas.height = viewport.height;
           canvas.width = viewport.width;
           await page.render({ canvasContext: context, viewport }).promise;
 
-          // ---------- OCR (amended): proper init + digits-only + rotations ----------
+          // ----- OCR (robust): proper init, digits-only, rotation; logger on recognize() -----
           let combinedText = "";
 
           const worker = await createWorker({
-            logger: (m) => console.log("[tesseract]", m),
-            // Explicit paths avoid silent stalls on Netlify
+            // NOTE: do NOT pass `logger` here (causes DataCloneError in your build)
             workerPath: "https://unpkg.com/tesseract.js@5.0.4/dist/worker.min.js",
             corePath: "https://unpkg.com/tesseract.js-core@5.0.2/tesseract-core.wasm.js",
             langPath: "https://tessdata.projectnaptha.com/4.0.0",
@@ -72,9 +61,9 @@ const App = () => {
               preserve_interword_spaces: "1",
             });
 
-            // Try OCR at 0, 90, 180, 270 (stop early if we find IDs)
             const angles = [0, 90, 180, 270];
             for (const angle of angles) {
+              // rotate the rendered page canvas
               const rCanvas = document.createElement("canvas");
               const rCtx = rCanvas.getContext("2d");
 
@@ -98,25 +87,24 @@ const App = () => {
               );
               rCtx.restore();
 
-              console.log(`[ocr] page ${pageNum} at ${angle}°`);
               const {
                 data: { text },
-              } = await worker.recognize(rCanvas);
+              } = await worker.recognize(
+                rCanvas,
+                { logger: (m) => console.log("[tesseract]", m) } // ✅ logger here, not in createWorker
+              );
 
               combinedText += "\n" + text;
 
-              const earlyIds = extractPalletIds(combinedText);
-              if (earlyIds.length > 0) {
-                // Early exit once any 18‑digit IDs are present
-                break;
-              }
+              // optional early-exit if we already see any 18-digit IDs
+              if (extractPalletIds(combinedText).length > 0) break;
             }
           } catch (err) {
             console.error("[ocr] failed:", err);
           } finally {
             await worker.terminate();
           }
-          // ---------- END OCR ----------
+          // ----- END OCR -----
 
           const ids = extractPalletIds(combinedText);
           ids.forEach((id) => {
